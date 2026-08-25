@@ -8,10 +8,16 @@ Every write, add and delete in that tree re-parses the affected file and
 re-renders — an incremental save costs a couple of milliseconds, so an agent
 editing files reads as heat moving through the graph while it happens.
 
-Fly around it. Drag the screens where you want them. Double-click one to open
-the file flat, read it, edit it, save it — the write goes to disk, the watcher
-sees it, and the graph updates the same way it would for an edit made anywhere
-else.
+Fly around it. Drag the screens where you want them. Double-click one to fly in
+until it fills the frame; open a file flat from the **changes** drawer to read
+it, edit it and save it — the write goes to disk, the watcher sees it, and the
+graph updates the same way it would for an edit made anywhere else.
+
+![codeflow3d tracing its own source, live](docs/live-graph.png)
+
+*Tracing its own source. The amber-outlined screens were saved seconds before
+the frame; the green bands are the lines that changed, and the streamlines are
+real call paths, warm where the code is fresh.*
 
 ```bash
 bun install
@@ -57,6 +63,8 @@ The **repo** drawer shows the split as a bar per tier, so you can see how much
 of the map is fact and how much is inference. On this repository it is
 about 90% resolved. Calls into third-party packages resolve to nothing and are
 counted as external rather than invented.
+
+![The repo drawer, with a confidence bar per resolution tier](docs/repo-drawer.png)
 
 Languages: **TypeScript, TSX, JavaScript, JSX, Python, Rust, Go**. JSX element
 usage counts as an edge, so a React component tree is part of the graph.
@@ -173,6 +181,14 @@ happen.
 Click a row in the **changes** drawer to open that file full screen. Line numbers, syntax
 colours, flow rails, and the lines that changed on the last write. **edit** to
 type, **⌘S** to save, **Escape** or **✕** to return to 3D.
+
+![A file open flat, with line numbers, syntax colours and flow rails](docs/flat-editor.png)
+
+The drawer itself is the change log: every write since the repository was
+opened, newest first, with the diff expandable inline and a **SAVE** button that
+writes the buffer back to disk.
+
+![The changes drawer, with per-file diffs and graph statistics](docs/change-log.png)
 
 It stays live while open: when the watcher reports the file changed, the new
 text is pulled in. If you have unsaved work, the incoming version is never
@@ -393,3 +409,29 @@ bun run start -- --path /path/to/repo --port 5189
 ```
 
 One port serves the built client, the API and the WebSocket.
+
+## Built with
+
+Open source, and standing on it. Every piece of the pipeline is somebody else's
+work doing the hard part:
+
+| | |
+| --- | --- |
+| [tree-sitter](https://tree-sitter.github.io/tree-sitter/) via [web-tree-sitter](https://www.npmjs.com/package/web-tree-sitter) `0.24.7` | Incremental parsing. Every definition, call and import in the graph is a tree-sitter query result, not a regex guess. |
+| [tree-sitter-wasms](https://www.npmjs.com/package/tree-sitter-wasms) `0.1.13` | The compiled grammars — TypeScript, TSX, JavaScript, JSX, Python, Rust, Go. |
+| [Bun](https://bun.sh) | Runtime, bundler-free dev server, test runner, and the `--watch` supervisor behind server hot reload. |
+| [three.js](https://threejs.org) `0.169.0` | The renderer. Streamlines, glyphs, screens and the flow-scalar shading are all three.js. |
+| [React Three Fiber](https://r3f.docs.pmnd.rs) `8.17.10` + [drei](https://github.com/pmndrs/drei) `9.114.3` | three.js as a React tree, which is what makes the scene declarative. |
+| [React](https://react.dev) `18.3.1` | The viewer and its HUD. |
+| [zustand](https://zustand.docs.pmnd.rs) `5.0.1` | Client state — scene, camera, drawers, per-repository settings. |
+| [chokidar](https://github.com/paulmillr/chokidar) `4.0.3` | Filesystem watching. Every re-parse starts as a chokidar event. |
+| [Vite](https://vite.dev) `6.0.7` | Dev server and HMR for the client, and the production bundle. |
+| [TypeScript](https://www.typescriptlang.org) `5.7.2` | All of it. |
+| [`@google/model-viewer`](https://modelviewer.dev) `4.0.0` | Viewing exported GLBs. |
+
+Contributions are welcome — issues and pull requests both. `make test` runs the
+end-to-end suite against a real boot of the stack, so start there.
+
+## License
+
+[MIT](LICENSE) — do what you like with it, keep the notice.

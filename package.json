@@ -1,7 +1,12 @@
 {
   "name": "codeflow3d",
-  "private": true,
   "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ilyashusterman/codeflow3d.git"
+  },
+  "homepage": "https://github.com/ilyashusterman/codeflow3d",
   "type": "module",
   "scripts": {
     "postinstall": "bun scripts/sync-wasm.ts",
