@@ -1,0 +1,32 @@
+{
+  "name": "codeflow3d-live",
+  "displayName": "CodeFlow3D Live",
+  "description": "Streams unsaved buffers to a running CodeFlow3D viewer so typing appears in the 3D scene as you type.",
+  "version": "1.0.0",
+  "publisher": "codeflow3d",
+  "engines": { "vscode": "^1.75.0" },
+  "categories": ["Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "CodeFlow3D Live",
+      "properties": {
+        "codeflow3d.server": {
+          "type": "string",
+          "default": "http://127.0.0.1:5189",
+          "description": "Address of the running CodeFlow3D server."
+        },
+        "codeflow3d.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stream unsaved buffers to the viewer."
+        }
+      }
+    },
+    "commands": [
+      { "command": "codeflow3d.reconnect", "title": "CodeFlow3D: Reconnect to viewer" },
+      { "command": "codeflow3d.status", "title": "CodeFlow3D: Show connection status" }
+    ]
+  }
+}
