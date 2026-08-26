@@ -547,11 +547,11 @@ async function main() {
    */
   const app = await readFile(resolve(ROOT, "client/src/App.tsx"), "utf8");
   check(
-    "the scene is behind a capability check, so a browser without WebGL keeps the HUD",
-    /hasWebGL\(\)/.test(app) && /webgl && \(/.test(app),
+    "the scene is attempted, never predicted — no capability probe gates the canvas",
+    !/hasWebGL\(\)/.test(app) && /scene3d && \(/.test(app),
   );
   check(
-    "and behind an error boundary, so a scene that throws does not take the page with it",
+    "and it sits behind an error boundary, so a scene that throws leaves the app standing",
     /<SceneBoundary/.test(app) && /SceneFallback/.test(app),
   );
   const socketSrc = await readFile(resolve(ROOT, "client/src/net/socket.ts"), "utf8");

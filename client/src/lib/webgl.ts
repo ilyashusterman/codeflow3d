@@ -1,38 +1,41 @@
 /**
- * Can this browser draw the scene at all?
+ * Diagnostics for a scene that would not draw, and one switch for testing.
  *
- * Asked because of a real failure: opened in VS Code's built-in Browser the
- * viewer showed a black rectangle and nothing else. The page had loaded — the
- * tab took its title from it — but `<Canvas>` throws when a WebGL context
- * cannot be created, and a throw during render unmounts the whole tree, so the
- * HUD went with it and there was nothing on screen to say what had happened.
+ * This deliberately does *not* gate the scene. An earlier version of this file
+ * probed for a context up front and refused to mount `<Canvas>` when the probe
+ * came back empty — which is a second, weaker oracle sitting in front of the
+ * real one. The probe runs on a detached canvas, and a detached canvas is
+ * exactly the case an embedded browser is most likely to refuse while happily
+ * giving a context to the real, attached one. A false "no" there costs the user
+ * the whole scene for no reason.
  *
- * The probe is one throwaway canvas, cached, because the answer cannot change
- * within a page load.
+ * So the renderer is the only thing that decides. If it throws, the boundary
+ * catches it, and *then* this runs — to say something more useful in the
+ * fallback than the exception alone.
  */
-let cached: boolean | null = null;
 
-export function hasWebGL(): boolean {
-  if (cached !== null) return cached;
-  // A deliberate way to see the fallback in a browser that does have WebGL.
-  if (typeof location !== "undefined" && new URLSearchParams(location.search).has("nogl")) {
-    cached = false;
-    return cached;
+/** Forces the fallback in a browser that can draw, so it can be looked at. */
+export function fallbackForced(): boolean {
+  try {
+    return new URLSearchParams(location.search).has("nogl");
+  } catch {
+    return false;
   }
+}
+
+export type Probe = "webgl2" | "webgl" | "none" | "threw";
+
+/** What a context request answers *now* — asked only after something failed. */
+export function probeWebGL(): Probe {
   try {
     const canvas = document.createElement("canvas");
-    const gl =
-      canvas.getContext("webgl2") ??
-      canvas.getContext("webgl") ??
-      canvas.getContext("experimental-webgl");
-    cached = Boolean(gl);
-    // Contexts are a scarce resource; give this one back rather than waiting
-    // for the GC to notice a canvas nothing references.
-    if (gl && "getExtension" in gl) {
-      (gl as WebGLRenderingContext).getExtension("WEBGL_lose_context")?.loseContext();
-    }
+    // A size, because zero-sized surfaces are refused in some embedders.
+    canvas.width = 64;
+    canvas.height = 64;
+    if (canvas.getContext("webgl2")) return "webgl2";
+    if (canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl")) return "webgl";
+    return "none";
   } catch {
-    cached = false;
+    return "threw";
   }
-  return cached;
 }

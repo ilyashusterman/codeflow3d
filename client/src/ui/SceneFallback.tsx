@@ -11,6 +11,7 @@
  * the whole application with an apology.
  */
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { probeWebGL } from "../lib/webgl";
 
 export class SceneBoundary extends Component<
   { children: ReactNode; onError: (message: string) => void },
@@ -36,21 +37,28 @@ export class SceneBoundary extends Component<
 }
 
 export function SceneFallback({ reason }: { reason: string | null }) {
+  // Asked here rather than before the scene mounted: this runs because the
+  // renderer already failed, so the answer is a description of that failure
+  // rather than a prediction of it.
+  const probe = probeWebGL();
   return (
     <div className="no-gl">
       <div className="no-gl-card">
-        <h2>the graph needs WebGL</h2>
+        <h2>the scene could not start</h2>
         <p>
-          This browser view cannot create a WebGL context, so the 3D scene has
-          nothing to draw on. Everything that is not the scene still works:{" "}
-          <b>C</b> opens the change log, <b>Tab</b> the controls, and clicking a
-          file there opens it full screen.
+          The 3D view needs a WebGL context and this browser view would not give
+          it one. Everything that is not the scene still works: <b>C</b> opens
+          the change log, <b>Tab</b> the controls, and clicking a file there
+          opens it full screen.
         </p>
         <p className="no-gl-hint">
           For the scene itself, open <code>{location.href.replace(/\?.*$/, "")}</code> in
           Chrome, Brave, Safari or Firefox.
         </p>
-        {reason && <p className="no-gl-why">{reason}</p>}
+        <p className="no-gl-why">
+          context: {probe === "none" ? "refused" : probe === "threw" ? "threw" : probe}
+          {reason ? ` · ${reason}` : ""}
+        </p>
       </div>
     </div>
   );
