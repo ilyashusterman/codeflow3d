@@ -7,6 +7,7 @@
  * directory is the one you meant before you open it.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { apiUrl } from "../net/api";
 
 interface DirInfo {
@@ -140,7 +141,16 @@ export function FolderPicker({
     return parts.map((name, i) => ({ name, path: "/" + parts.slice(0, i + 1).join("/") }));
   }, [listing]);
 
-  return (
+  /*
+   * Rendered into the body rather than in place.
+   *
+   * The picker is opened from the repo drawer, and the drawer is a clipped,
+   * transformed box 430px tall — which made it the containing block for
+   * anything inside it, fixed or not, and cut the dialog's footer (the button
+   * that actually starts the watch) off below the window. A modal belongs at
+   * the top of the tree.
+   */
+  return createPortal(
     <div className="picker-backdrop" onMouseDown={onClose}>
       <div className="picker" onMouseDown={(e) => e.stopPropagation()}>
         <header>
@@ -258,6 +268,7 @@ export function FolderPicker({
           </button>
         </footer>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

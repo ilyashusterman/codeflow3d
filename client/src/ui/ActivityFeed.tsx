@@ -63,25 +63,40 @@ function EventRow({ event, now }: { event: FileEvent; now: number }) {
         >
           {event.path}
         </button>
-        {(event.added || event.removed) && (
-          <span className="ev-delta">
-            {event.added ? <b>+{event.added}</b> : null}
-            {event.removed ? <em>-{event.removed}</em> : null}
-          </span>
-        )}
-        {event.unsaved && <span className="ev-unsaved">unsaved</span>}
-        {event.seeded && (
-          <span className="ev-seeded" title="last written before this session started">
-            on disk
-          </span>
-        )}
-        {event.fromEditor && <span className="ev-self">here</span>}
-        <span className="ev-age">{ago(event.at, now)}</span>
-        {hasHunk && (
-          <button className="ev-expand" onClick={() => setOpen((v) => !v)} title="show the changed lines">
-            {open ? "▾" : "▸"}
-          </button>
-        )}
+        {/* Every fact about the write in one right-hand cluster, so the ages
+            line up down the edge of the list instead of floating wherever the
+            badges before them happened to end. */}
+        <span className="ev-meta">
+          {/* Boolean(), not the raw numbers: `0 && …` evaluates to 0, and React
+              renders that as the character "0" — which is what put a stray zero
+              beside every newly added file. */}
+          {Boolean(event.added || event.removed) && (
+            <span className="ev-delta">
+              {event.added ? <b>+{event.added}</b> : null}
+              {event.removed ? <em>-{event.removed}</em> : null}
+            </span>
+          )}
+          {event.unsaved && <span className="ev-chip live">unsaved</span>}
+          {event.seeded && (
+            <span className="ev-chip" title="last written before this session started">
+              on disk
+            </span>
+          )}
+          {event.fromEditor && <span className="ev-chip self">here</span>}
+          <span className="ev-age">{ago(event.at, now)}</span>
+          {hasHunk ? (
+            <button
+              className="ev-expand"
+              onClick={() => setOpen((v) => !v)}
+              title={open ? "hide the changed lines" : "show the changed lines"}
+              aria-expanded={open}
+            >
+              {open ? "\u25be" : "\u25b8"}
+            </button>
+          ) : (
+            <span className="ev-expand" />
+          )}
+        </span>
       </div>
       {hasHunk && open && <Hunk event={event} />}
     </div>

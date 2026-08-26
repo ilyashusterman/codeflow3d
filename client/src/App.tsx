@@ -14,6 +14,9 @@ function LiveApp() {
   const pointerLocked = useStore((s) => s.pointerLocked);
   const focused = useStore((s) => s.focused);
   const zoomed = useStore((s) => s.zoomed);
+  // The floating fly hint would sit on top of an open drawer, which documents
+  // the same keys properly a few pixels above it.
+  const drawer = useStore((s) => s.drawer);
   const setZoomed = useStore((s) => s.setZoomed);
   const moving = useStore((s) => s.moving);
   const [cameraPos, setCameraPos] = useState<[number, number, number]>([0, 0, 0]);
@@ -29,7 +32,7 @@ function LiveApp() {
   const chromeHidden = moving || pointerLocked || Boolean(focused);
 
   return (
-    <div className={`app ${chromeHidden ? "flying" : ""}`}>
+    <div className={`app ${chromeHidden ? "flying" : ""} ${drawer ? "drawer-open" : ""}`}>
       <Scene onCameraSample={sample} />
       <StatusToast />
       <Hud

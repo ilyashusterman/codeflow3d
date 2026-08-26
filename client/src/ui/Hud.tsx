@@ -140,12 +140,13 @@ export function Hud({
           </span>
         </div>
 
-        {/* Centre: the transfer function this scene is coloured by. */}
-        <div className="hud-legend">
-          <span>{lo.toFixed(1)}</span>
+        {/* Centre: the transfer function this scene is coloured by, labelled
+            with what it means. The domain values are for reading the glyph
+            colours precisely, which is a hover, not a permanent read-out. */}
+        <div className="hud-legend" title={`recency ramp · domain ${lo.toFixed(1)} → ${hi.toFixed(1)}`}>
+          <span>settled</span>
           <i style={{ background: gradient }} />
-          <span>{hi.toFixed(1)}</span>
-          <em>settled → just edited</em>
+          <span>just edited</span>
         </div>
 
         {/* Right: latest change, mode, position, drawers. */}
@@ -160,9 +161,14 @@ export function Hud({
           ) : (
             <span className="hud-latest dim">{phase === "analyzing" ? "parsing…" : "watching"}</span>
           )}
-          <span className="hud-coords">{cameraPos.map((v) => v.toFixed(1)).join("  ")}</span>
+          <span className="hud-sep" />
+          <span className="hud-coords" title="camera position">
+            <i>xyz</i>
+            {cameraPos.map((v) => v.toFixed(1)).join("  ")}
+          </span>
+          <span className="hud-sep" />
           <button
-            className={`hud-align ${strayCount ? "stray" : ""}`}
+            className={`hud-btn hud-align ${strayCount ? "stray" : ""}`}
             onClick={alignPanels}
             title="snap every screen back into the grid (G)"
           >
@@ -170,7 +176,7 @@ export function Hud({
             {strayCount > 0 && <b>{strayCount}</b>}
           </button>
           <button
-            className={`hud-mode ${view.navMode === "fly" ? "fly" : ""}`}
+            className={`hud-btn hud-mode ${view.navMode === "fly" ? "fly" : ""}`}
             onClick={() => setView({ navMode: view.navMode === "fly" ? "orbit" : "fly" })}
             title="orbit ⇄ fly (F)"
           >

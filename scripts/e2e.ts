@@ -538,6 +538,26 @@ async function main() {
   const src = await api<{ source: string; language: string | null }>("/api/source?file=beta.ts");
   check("source served for a tracked file", src.source.includes("export function beta"), `language=${src.language}`);
 
+  /*
+   * A file that is not text says so, rather than being served as text.
+   *
+   * The viewer asks this endpoint for anything the change log lists, and the
+   * change log lists every write — an image included. Handing back the bytes
+   * meant flat mode highlighted a PNG as TypeScript and drew two thousand
+   * lines of mojibake, so the endpoint decides it on the evidence (a NUL byte)
+   * and the viewer draws an empty state instead.
+   */
+  await writeFile(resolve(FIXTURE, "logo.png"), Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x01, 0x02]));
+  const bin = await api<{ binary?: boolean; bytes?: number; source: string }>("/api/source?file=logo.png");
+  check("a binary file is reported as binary, not served as text", bin.binary === true, `${bin.bytes} bytes`);
+  check("and no bytes are handed to the highlighter", bin.source === "");
+  await writeFile(resolve(FIXTURE, "NOTES.unknownext"), "still text, just not an extension we classify\n");
+  const textAnyway = await api<{ binary?: boolean; source: string }>("/api/source?file=NOTES.unknownext");
+  check(
+    "a text file with an unknown extension is still served as text",
+    !textAnyway.binary && textAnyway.source.includes("still text"),
+  );
+
   const edited = src.source.replace("* 2", "* 3");
   const wrote = await api<{ ok: boolean; bytes: number }>("/api/write", {
     method: "POST",

@@ -12,7 +12,7 @@
  */
 import { useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
-import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, ShaderMaterial } from "three";
+import { AdditiveBlending, BufferAttribute, BufferGeometry, Color, NormalBlending, ShaderMaterial } from "three";
 import { useDisposed } from "../lib/useDisposable";
 
 export interface GridSegment {
@@ -130,7 +130,7 @@ export function GridLines({
         uniforms: { uProgress: { value: 0 }, uOpacity: { value: opacity } },
         transparent: true,
         depthWrite: false,
-        blending: additive ? AdditiveBlending : undefined,
+        blending: additive ? AdditiveBlending : NormalBlending,
       }),
     [opacity, additive],
   );

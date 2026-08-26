@@ -313,9 +313,9 @@ export function NavPanel() {
           follow changes
         </button>
         <p className="hint">
-          <b>Click</b> a screen and it turns to face you. <b>Double-click</b>
-          flies you in until it fills the frame; <b>esc</b> flies back.
-          <b> Drag</b> moves it in the plane you are looking at, and the wheel
+          <b>Click</b> a screen and it turns to face you. <b>Double-click</b>{" "}
+          flies you in until it fills the frame; <b>esc</b> flies back.{" "}
+          <b>Drag</b> moves it in the plane you are looking at, and the wheel
           pushes it away or pulls it closer.
         </p>
         <p className="hint">

@@ -22,9 +22,18 @@ function tokenClass(c: TokenClass) {
   return "tk-" + c;
 }
 
+/** Bytes, in the unit a person would have said. */
+function size(bytes: number) {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} kB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
 interface Loaded {
   source: string;
   language: string;
+  /** Not text. Bytes, so the empty state can say how big it is. */
+  binary?: number;
 }
 
 /** Line roles for the whole file, from the graph rather than from the window. */
@@ -89,6 +98,7 @@ export function FlatView() {
           return null;
         }
         setError(null);
+        if (body.binary) return { source: "", language: "binary", binary: body.bytes ?? 0 };
         return { source: body.source ?? "", language: body.language ?? "typescript" };
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
@@ -172,7 +182,7 @@ export function FlatView() {
   }, [save, close]);
 
   const lines = useMemo(() => {
-    if (!loaded) return [];
+    if (!loaded || loaded.binary !== undefined) return [];
     const count = text.split("\n").length;
     return highlight(text, loaded.language, 1, Math.min(count, 8000));
   }, [text, loaded]);
@@ -208,7 +218,10 @@ export function FlatView() {
   return (
     <div className="flat">
       <header>
-        <span className="flat-file">{file}</span>
+        <span className="flat-file" title={file}>
+          {file.includes("/") && <span className="flat-dir">{file.slice(0, file.lastIndexOf("/") + 1)}</span>}
+          <span className="flat-name">{file.slice(file.lastIndexOf("/") + 1)}</span>
+        </span>
         {panel && (panel.added > 0 || panel.removed > 0) && (
           <span className="scr-delta">
             <b>+{panel.added}</b>
@@ -216,7 +229,9 @@ export function FlatView() {
           </span>
         )}
         <span className="flat-meta">
-          {lines.length} lines{loaded ? ` · ${loaded.language}` : ""}
+          {loaded?.binary !== undefined
+            ? `${size(loaded.binary)} · binary`
+            : `${lines.length} lines${loaded ? ` · ${loaded.language}` : ""}`}
           {savedAt && !dirty ? " · saved" : ""}
         </span>
         <span className="flat-actions">
@@ -228,7 +243,11 @@ export function FlatView() {
               <button onClick={() => setDraft(null)}>stop editing</button>
             </>
           ) : (
-            <button onClick={() => setDraft(loaded?.source ?? "")} disabled={!loaded}>
+            <button
+              onClick={() => setDraft(loaded?.source ?? "")}
+              disabled={!loaded || loaded.binary !== undefined}
+              title={loaded?.binary !== undefined ? "not a text file" : "edit this file"}
+            >
               edit
             </button>
           )}
@@ -258,7 +277,16 @@ export function FlatView() {
 
       <div className="flat-body">
         {!loaded && !error && <div className="flat-loading">reading {file}…</div>}
-        {loaded && !editing && (
+        {loaded?.binary !== undefined && (
+          <div className="flat-binary">
+            <b>{file.slice(file.lastIndexOf("/") + 1)}</b>
+            <span>
+              {size(loaded.binary)} of binary data. There is nothing to read as code
+              here — the trace still watches this file and reports every write to it.
+            </span>
+          </div>
+        )}
+        {loaded && loaded.binary === undefined && !editing && (
           <div className="flat-read">
             {lines.map((line) => {
               const flow = roles.get(line.n);
@@ -288,7 +316,7 @@ export function FlatView() {
             })}
           </div>
         )}
-        {loaded && editing && (
+        {loaded && loaded.binary === undefined && editing && (
           <div className="flat-edit">
             <div className="flat-gutter" ref={gutterRef}>
               {lines.map((line) => (
@@ -343,7 +371,13 @@ export function FlatView() {
 
       <footer>
         <span>
-          <b>esc</b> back to 3D · <b>⌘S</b> save · flow rails show what the traced call graph runs through
+          <b>esc</b> back to 3D
+          {loaded?.binary === undefined && (
+            <>
+              {" · "}
+              <b>⌘S</b> save · flow rails show what the traced call graph runs through
+            </>
+          )}
         </span>
         <span className="flat-status">
           {dirty && <b className="scr-dirty">unsaved changes</b>}

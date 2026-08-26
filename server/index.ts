@@ -829,6 +829,19 @@ const server = Bun.serve({
       }
       const f = Bun.file(abs);
       if (await f.exists()) {
+        /*
+         * A file the analyser never took is either a text file it does not
+         * classify or not text at all, and the difference matters: handing an
+         * image's bytes to the highlighter produced two thousand lines of
+         * mojibake labelled "typescript". Decide it the way the rest of this
+         * server decides things — on evidence in the file rather than on its
+         * name. A NUL byte in the first few KB is what every diff tool in
+         * existence uses to mean "not text", and no UTF-8 text contains one.
+         */
+        const head = new Uint8Array(await f.slice(0, 8192).arrayBuffer());
+        if (head.includes(0)) {
+          return json({ file: rel, binary: true, bytes: f.size, source: "", language: null, revisions: 0, readOnly: true });
+        }
         return json({ file: rel, language: null, source: await f.text(), revisions: 0, readOnly: false });
       }
       return json({ error: "not found" }, 404);
