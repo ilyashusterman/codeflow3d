@@ -17,7 +17,7 @@ import { mkdir, rm, writeFile, readFile, appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { TOKEN_CLASSES } from "../shared/protocol";
 import { METRICS, PX_PER_UNIT, TOKEN_COLORS, editorMetrics } from "../client/src/lib/editorTheme";
-import { MOTION, freshLines } from "../client/src/lib/motion";
+import { MOTION, freshLines, glide, queueDelay } from "../client/src/lib/motion";
 
 const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const UI_PORT = process.env.PORT ?? "5288";
@@ -254,6 +254,71 @@ async function checkEditor(scene: any) {
       : `${METRICS.tabSize}-space tabs, ${scene.panels?.length ?? 0} screens filled`);
 }
 
+// -------------------------------------------------------------- the queue
+
+/** Run the glide for `seconds` of wall clock at a given frame rate. */
+function settle(from: number, to: number, seconds: number, fps: number, over = MOTION.slot) {
+  let value = from;
+  const dt = 1 / fps;
+  for (let t = 0; t < seconds; t += dt) value = glide(value, to, dt, over);
+  return value;
+}
+
+/**
+ * A new file takes the first slot and pushes every screen behind it along one.
+ *
+ * That shift used to be written straight into the transform, so the whole wall
+ * changed places between two frames — a hard cut, with nothing to say which way
+ * the row went. The screens travel now, in order. What can be checked without a
+ * renderer is the two halves of that: the server really does re-slot the row
+ * when a file arrives, and the glide those slots are fed into converges, at any
+ * frame rate, in about the time it claims.
+ */
+async function checkQueue(before: any) {
+  const NEW = "delta.ts";
+  const wasFirst: string | undefined = before.panels?.[0]?.file;
+  await writeFile(
+    resolve(FIXTURE, NEW),
+    `import { beta } from "./beta";\n\nexport function delta(): number {\n  return beta(3);\n}\n`,
+  );
+  const after = await waitFor("a new file takes a screen", async () => {
+    const s = await api<any>("/api/scene");
+    return s.panels?.some((p: any) => p.file === NEW) ? s : null;
+  }, 20_000);
+
+  if (after) {
+    const order: string[] = after.panels.map((p: any) => p.file);
+    check("the new file is first in the row", order[0] === NEW, order.slice(0, 4).join(" → "));
+    // The screen that held a slot is still on stage, one place further along:
+    // that displacement is exactly what the queued glide animates.
+    if (wasFirst && wasFirst !== NEW) {
+      const moved = order.indexOf(wasFirst);
+      check("the screen it displaced moved along rather than vanishing", moved > 0,
+        `${wasFirst}: slot 0 → ${moved}`);
+    }
+    check("the row shifted by one, not shuffled", order.slice(1).join(" ") !== order.join(" "),
+      `${order.length} screens`);
+  }
+
+  // The glide itself: same wall clock, wildly different frame rates, same place.
+  const slow = settle(0, 10, MOTION.slot, 30);
+  const fast = settle(0, 10, MOTION.slot, 144);
+  check("a screen travels the same distance whatever the frame rate",
+    Math.abs(slow - fast) < 0.25, `30fps → ${slow.toFixed(2)}, 144fps → ${fast.toFixed(2)} of 10`);
+  check("it has effectively arrived in the time it promises",
+    Math.abs(10 - settle(0, 10, MOTION.slot, 60)) < 0.15, `${settle(0, 10, MOTION.slot, 60).toFixed(3)} of 10`);
+  check("and it lands exactly, rather than creeping forever",
+    settle(0, 10, MOTION.slot * 3, 60) === 10, "snapped");
+  check("nothing moves when a slot has not changed", glide(4, 4, 1 / 60, MOTION.slot) === 4);
+
+  // The cascade: later screens wait their turn, and the whole row is moving
+  // well inside the time one screen takes to travel.
+  const delays = [0, 1, 2, 3, 4, 5].map(queueDelay);
+  const ordered = delays.every((d, i) => i === 0 || d > delays[i - 1]);
+  check("the row moves in order, not all at once", ordered && delays[5] < MOTION.slot,
+    `last screen starts ${delays[5].toFixed(2)}s in, travels for ${MOTION.slot}s`);
+}
+
 // ------------------------------------------------------------------ the test
 
 async function main() {
@@ -460,6 +525,9 @@ async function main() {
       MOTION.enter > 0.2 && MOTION.enter < 2 && MOTION.reveal > 0.2 && MOTION.reveal < 2 && MOTION.leave > 0.1,
       `enter ${MOTION.enter}s · reveal ${MOTION.reveal}s · leave ${MOTION.leave}s · birth ${MOTION.birth}s`);
   }
+
+  // ---- a new file shifts the row, and the row has to travel
+  await checkQueue(scene);
 
   // ---- server-side hot reload: `bun --watch` restarts the API on server edits
   // Proven without touching source: the supervisor is what re-serves after a

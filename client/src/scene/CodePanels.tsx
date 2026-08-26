@@ -14,11 +14,11 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { DoubleSide, type Group, type MeshBasicMaterial } from "three";
+import { DoubleSide, Vector3, type Group, type MeshBasicMaterial } from "three";
 import type { CodePanel, SceneGraph } from "@shared/protocol";
 import { createCanvas, roundRect, toTexture } from "../lib/canvasTex";
 import { EDITOR, EDITOR_FONT, METRICS, PX_PER_UNIT, TOKEN_COLORS, editorMetrics } from "../lib/editorTheme";
-import { MOTION, easeOut, freshLines, lineText } from "../lib/motion";
+import { MOTION, easeOut, freshLines, glide, lineText, queueDelay } from "../lib/motion";
 import { useDisposed } from "../lib/useDisposable";
 import { useStore } from "../state/store";
 import { useScreenGrab } from "./Grab";
@@ -451,6 +451,18 @@ function Panel({
   const group = useRef<Group>(null);
   const material = useRef<MeshBasicMaterial>(null);
   const born = useRef(performance.now());
+  /**
+   * Where this screen actually is, as opposed to where its slot is.
+   *
+   * Slots are handed out by recency, so one new file shifts every screen behind
+   * it along by one — and writing the slot straight into the transform made that
+   * a hard cut: the whole wall changed places between two frames, with nothing
+   * to say which way anything went. The screen now travels there, and the
+   * screens travel in order (see `queueDelay`), so the row visibly makes room.
+   */
+  const at = useRef<Vector3 | null>(null);
+  /** The slot last aimed at, and when this screen is allowed to start moving. */
+  const aim = useRef<{ slot: string; startAt: number }>({ slot: "", startAt: 0 });
   const closedAt = useRef<number | null>(null);
   if (exiting && closedAt.current === null) closedAt.current = performance.now();
   const [hovered, setHovered] = useState(false);
@@ -566,19 +578,43 @@ function Panel({
     const enter = Math.min(1, (now - born.current) / 1000 / MOTION.enter);
     const leave = closedAt.current === null ? 0 : Math.min(1, (now - closedAt.current) / 1000 / MOTION.leave);
     const rise = easeOut(enter);
-    g.position.set(
-      position[0],
-      position[1] + (1 - rise) * 0.34 - easeOut(leave) * 0.3,
-      position[2] - (1 - rise) * 0.25,
-    );
+
+    // Where the slot says it belongs, including the arrival and departure
+    // offsets. A screen arrives from outside the row and to the back, so joining
+    // reads as *joining* rather than materialising in place; one that is leaving
+    // sinks and recedes out of it.
+    const gone = easeOut(leave);
+    const wantX = position[0] - (1 - rise) * 0.6;
+    const wantY = position[1] + (1 - rise) * 0.18 - gone * 0.55;
+    const wantZ = position[2] - (1 - rise) * 0.45 - gone * 0.5;
+
+    // A slot change starts a queued move: this screen waits its turn, then
+    // travels. A screen in hand is exempt — a dragged screen must track the
+    // cursor exactly, and lag there reads as the app fighting you.
+    const slot = `${position[0]},${position[1]},${position[2]}`;
+    if (aim.current.slot !== slot) {
+      aim.current = { slot, startAt: now + queueDelay(index) * 1000 };
+    }
+    if (!at.current) {
+      at.current = new Vector3(wantX, wantY, wantZ);
+    } else if (held || now >= aim.current.startAt) {
+      const seconds = held ? 0 : MOTION.slot;
+      at.current.set(
+        glide(at.current.x, wantX, dt, seconds),
+        glide(at.current.y, wantY, dt, seconds),
+        glide(at.current.z, wantZ, dt, seconds),
+      );
+    }
+    g.position.copy(at.current);
     // A touch of overshoot on the way in: it arrives, it does not slide to a halt.
     const spring = 1 + 0.045 * Math.sin(Math.PI * rise) * (1 - rise);
     g.scale.setScalar(
-      (0.9 + 0.1 * rise) * spring * (1 - 0.14 * easeOut(leave)) * (held ? 1.06 : hovered ? 1.03 : 1),
+      (0.88 + 0.12 * rise) * spring * (1 - 0.24 * gone) * (held ? 1.06 : hovered ? 1.03 : 1),
     );
     if (material.current) {
-      // Fades up ahead of the sweep, so the window is there before the code is.
-      material.current.opacity = Math.min(1, enter * 2.2) * (1 - easeOut(leave));
+      // Fades over the whole arrival rather than snapping opaque in the first
+      // fifth of it: the fade is the part you actually see from across the scene.
+      material.current.opacity = easeOut(Math.min(1, enter * 1.15)) * (1 - gone);
     }
 
     const reveal = motion.current.fresh.size

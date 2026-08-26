@@ -30,15 +30,58 @@ export const reducedMotion =
  * one of these is a flourish on information the colours already carry.
  */
 export const MOTION = {
-  /** A screen opening: rise, fade up, and paint the file in. */
-  enter: reducedMotion ? 0.001 : 0.8,
-  /** A screen whose file lost its slot, sinking out. */
-  leave: reducedMotion ? 0.001 : 0.45,
+  /**
+   * A screen opening: it slides into the row from the outside, fades up, and
+   * paints the file in.
+   */
+  enter: reducedMotion ? 0.001 : 0.95,
+  /**
+   * A screen whose file lost its slot, sinking back out of the row.
+   *
+   * Deliberately unhurried. This was 0.45s, which is a real fade and still too
+   * quick to register — by the time you look at the movement it is over, and a
+   * screen you never saw leave reads as one that was never there. Leaving is
+   * half of what the wall is saying.
+   */
+  leave: reducedMotion ? 0.001 : 0.95,
   /** The lines a write just changed, flashing and typing in. */
   reveal: reducedMotion ? 0.001 : 0.6,
   /** A definition seen for the first time, flaring into the graph. */
   birth: reducedMotion ? 0.001 : 1.1,
+  /** A screen travelling to a slot that is not the one it was in. */
+  slot: reducedMotion ? 0.001 : 0.55,
 } as const;
+
+/**
+ * How long each screen waits before it follows a re-slot, in seconds per place
+ * in the row.
+ *
+ * Slots are handed out by recency, so one new file shifts every screen behind it
+ * along by one. Moving them all on the same frame is a wall that jumps; moving
+ * them in order, a beat apart, is a queue making room — you can see *which way*
+ * the row shifted, which is the only thing that jump was failing to say.
+ */
+export const SLOT_STAGGER = reducedMotion ? 0 : 0.055;
+
+/** The delay before the screen in position `index` starts moving. */
+export function queueDelay(index: number): number {
+  return Math.max(0, index) * SLOT_STAGGER;
+}
+
+/**
+ * One frame of an exponential glide toward a target.
+ *
+ * Frame-rate independent: the same wall-clock time covers the same fraction of
+ * the distance at 30fps and at 144fps, which a naive `current += (target -
+ * current) * 0.1` does not. `seconds` is the time to arrive for practical
+ * purposes — five time constants, after which the remainder is under a percent
+ * and the snap below finishes the job so nothing creeps forever.
+ */
+export function glide(current: number, target: number, dt: number, seconds: number): number {
+  if (seconds <= 0 || dt <= 0) return target;
+  const next = current + (target - current) * (1 - Math.exp((-5 * dt) / seconds));
+  return Math.abs(target - next) < 0.0004 ? target : next;
+}
 
 /** Ease-out cubic: fast off the mark, settles rather than stops. */
 export const easeOut = (t: number) => 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
