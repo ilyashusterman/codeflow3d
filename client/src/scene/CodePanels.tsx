@@ -12,17 +12,16 @@
  *
  * Screens can be dragged anywhere; where you put one is remembered per repo.
  */
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
-import { DoubleSide, type Group } from "three";
+import { DoubleSide, type Group, type MeshBasicMaterial } from "three";
 import type { CodePanel, SceneGraph } from "@shared/protocol";
 import { createCanvas, roundRect, toTexture } from "../lib/canvasTex";
+import { EDITOR, EDITOR_FONT, METRICS, PX_PER_UNIT, TOKEN_COLORS, editorMetrics } from "../lib/editorTheme";
+import { MOTION, easeOut, freshLines, lineText } from "../lib/motion";
 import { useDisposed } from "../lib/useDisposable";
 import { useStore } from "../state/store";
 import { useScreenGrab } from "./Grab";
-
-/** Texture resolution per world unit. High enough to read at close range. */
-const PX_PER_UNIT = 640;
 
 /**
  * Where each screen sits, per arrangement.
@@ -91,18 +90,6 @@ export function arrange(
   return { pos: [0, 0, 0], rotY: 0 };
 }
 
-const TOKEN_HEX: Record<string, string> = {
-  plain: "#c8d4e0",
-  keyword: "#c678dd",
-  string: "#98c379",
-  comment: "#5b6675",
-  number: "#d19a66",
-  fn: "#61afef",
-  type: "#e5c07b",
-  punct: "#9aa8b8",
-  op: "#56b6c2",
-};
-
 const LANG_ACCENT: Record<string, string> = {
   javascript: "#f0db4f",
   jsx: "#f0db4f",
@@ -113,220 +100,334 @@ const LANG_ACCENT: Record<string, string> = {
   rust: "#dea584",
 };
 
-/** Colours for the flow rail: what the traced call graph runs through. */
-const FLOW_HEX: Record<string, string> = {
-  def: "#7fd0ff",
-  call: "#c678dd",
-  body: "rgba(127,208,255,0.35)",
-};
+/** Where a screen is in its transitions, as the frame loop sees it. */
+interface Motion {
+  /** 0..1 while the screen is opening, 1 once open. */
+  enter: number;
+  /** 0..1 while the newest lines paint in, 1 once settled. */
+  reveal: number;
+  /** Buffer lines the last message actually changed — what `reveal` reveals. */
+  fresh: Set<number>;
+}
 
+const OPEN: Motion = { enter: 1, reveal: 1, fresh: new Set() };
+
+/**
+ * A screen, drawn as the editor it is standing in for.
+ *
+ * The layout is VSCode's, in this order: tab strip, then the editor proper —
+ * gutter, flow rail, code, minimap — then the status bar. Everything is placed
+ * off `editorMetrics`, so a line box is a fixed multiple of the em size on
+ * every screen and a bigger screen shows more of the file instead of the same
+ * dozen lines stretched to fit.
+ */
 function draw(
   panel: CodePanel,
   hovered: boolean,
   /** Which buffer line sits at the top of the screen; fractional while scrolling. */
   scroll: number,
+  motion: Motion,
   ctx: CanvasRenderingContext2D,
   w: number,
   h: number,
 ) {
+  const m = editorMetrics(w, h, PX_PER_UNIT);
   ctx.clearRect(0, 0, w, h);
-  const pad = 8;
+  const { pad } = m;
   const bw = w - pad * 2;
   const bh = h - pad * 2;
-  const bar = Math.max(26, Math.round(h * 0.062));
 
   // Body + glow. A file that just changed glows warm; that is the whole point
-  // of the screen being on stage.
+  // of the screen being on stage. The window itself is VSCode-grey — the glow
+  // is the map talking, not the editor.
   ctx.save();
   ctx.shadowColor = panel.unsaved
-    ? "rgba(120,215,255,0.75)"
+    ? "rgba(226,192,141,0.7)"
     : panel.heat > 0.05
       ? `rgba(255,178,64,${0.4 + panel.heat * 0.55})`
       : hovered
-        ? "rgba(127,208,255,0.5)"
-        : "rgba(70,140,220,0.25)";
+        ? "rgba(0,120,212,0.55)"
+        : "rgba(40,70,110,0.28)";
   ctx.shadowBlur = 20 + panel.heat * 40;
-  ctx.fillStyle = "rgba(9,13,19,0.97)";
-  roundRect(ctx, pad, pad, bw, bh, 9);
+  ctx.fillStyle = EDITOR.bg;
+  roundRect(ctx, pad, pad, bw, bh, 7);
   ctx.fill();
   ctx.restore();
 
   ctx.save();
-  roundRect(ctx, pad, pad, bw, bh, 9);
+  roundRect(ctx, pad, pad, bw, bh, 7);
   ctx.clip();
 
-  // ---- title bar
-  const g = ctx.createLinearGradient(0, pad, 0, pad + bar);
-  g.addColorStop(0, "rgba(40,49,63,0.99)");
-  g.addColorStop(1, "rgba(26,33,44,0.99)");
-  ctx.fillStyle = g;
-  ctx.fillRect(pad, pad, bw, bar);
+  // ---------------------------------------------------------------- tab strip
+  ctx.fillStyle = EDITOR.tabBar;
+  ctx.fillRect(pad, pad, bw, m.tab);
+  ctx.textBaseline = "middle";
+  const tabMid = pad + m.tab / 2;
 
+  const titleFont = Math.round(m.font * 0.95);
+  ctx.font = `${titleFont}px ${EDITOR_FONT}`;
+  const titleWidth = ctx.measureText(panel.title).width;
+  const tabW = Math.min(bw - m.font * 6, titleWidth + m.font * 4.6);
+
+  ctx.fillStyle = EDITOR.tabActive;
+  ctx.fillRect(pad, pad, tabW, m.tab);
+  // The line VSCode draws along an active tab, and the border under the strip.
+  ctx.fillStyle = panel.unsaved ? EDITOR.dirty : panel.active ? EDITOR.tabAccent : "rgba(0,120,212,0.5)";
+  ctx.fillRect(pad, pad, tabW, 2);
+  ctx.fillStyle = EDITOR.border;
+  ctx.fillRect(pad, pad + m.tab - 1, bw, 1);
+
+  // File-type dot, in place of an icon font.
   ctx.fillStyle = LANG_ACCENT[panel.language] ?? "#7f8ea3";
-  roundRect(ctx, pad + 12, pad + bar / 2 - 5, 10, 10, 3);
+  const dot = Math.max(4, Math.round(m.font * 0.34));
+  roundRect(ctx, pad + m.font, tabMid - dot / 2, dot, dot, 2);
   ctx.fill();
 
-  ctx.font = `600 ${Math.round(bar * 0.46)}px ui-monospace, "SF Mono", Menlo, monospace`;
-  ctx.textBaseline = "middle";
-  ctx.fillStyle = "#eaf4ff";
-  ctx.fillText(panel.title, pad + 30, pad + bar / 2 + 1);
-  const titleWidth = ctx.measureText(panel.title).width;
+  const titleX = pad + m.font * 1.1 + dot + m.font * 0.55;
+  ctx.fillStyle = panel.unsaved ? EDITOR.dirty : EDITOR.fg;
+  ctx.fillText(panel.title, titleX, tabMid);
 
-  // ---- change counts, right where the eye already is
-  let x = pad + 34 + titleWidth;
-  ctx.font = `${Math.round(bar * 0.4)}px ui-monospace, Menlo, monospace`;
+  // A tab's dirty dot: what you are looking at is not what is on disk.
+  if (panel.unsaved) {
+    ctx.beginPath();
+    ctx.arc(titleX + titleWidth + m.font * 0.85, tabMid, Math.max(2.5, m.font * 0.19), 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  // ---- change counts, on the strip beside the tab
+  ctx.font = `${Math.round(m.font * 0.85)}px ${EDITOR_FONT}`;
+  let x = pad + tabW + m.font * 0.8;
   if (panel.added) {
-    ctx.fillStyle = "#56d67c";
-    ctx.fillText(`+${panel.added}`, x, pad + bar / 2 + 1);
-    x += ctx.measureText(`+${panel.added}`).width + 8;
+    ctx.fillStyle = EDITOR.addedFg;
+    ctx.fillText(`+${panel.added}`, x, tabMid);
+    x += ctx.measureText(`+${panel.added}`).width + m.font * 0.5;
   }
   if (panel.removed) {
-    ctx.fillStyle = "#e0555c";
-    ctx.fillText(`-${panel.removed}`, x, pad + bar / 2 + 1);
+    ctx.fillStyle = EDITOR.removedFg;
+    ctx.fillText(`-${panel.removed}`, x, tabMid);
   }
-  // An unsaved buffer is the most important thing a title bar can say: what
-  // you are looking at is not what is on disk.
-  const tag = panel.unsaved ? "unsaved" : panel.revisions > 1 ? `r${panel.revisions}` : "";
-  if (tag) {
-    ctx.fillStyle = panel.unsaved ? "#78d7ff" : "#5b6675";
-    const tagWidth = ctx.measureText(tag).width;
-    if (panel.unsaved) {
-      ctx.beginPath();
-      ctx.arc(pad + bw - tagWidth - 22, pad + bar / 2, 3.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
-    ctx.fillText(tag, pad + bw - tagWidth - 12, pad + bar / 2 + 1);
+  if (panel.revisions > 1 && !panel.unsaved) {
+    const tag = `r${panel.revisions}`;
+    ctx.fillStyle = EDITOR.statusFg;
+    ctx.fillText(tag, pad + bw - ctx.measureText(tag).width - m.font * 0.7, tabMid);
   }
 
-  // ---- code
-  ctx.fillStyle = "rgba(11,16,23,0.98)";
-  ctx.fillRect(pad, pad + bar, bw, bh - bar);
+  // ------------------------------------------------------------------- editor
+  ctx.fillStyle = EDITOR.bg;
+  ctx.fillRect(pad, m.codeTop, bw, m.codeH);
 
-  const foot = Math.round(bar * 0.72);
-  const area = bh - bar - foot;
-  const rows = Math.max(1, panel.rows);
-  const lineH = area / rows;
-  const fontSize = Math.min(lineH * 0.72, 19);
-  ctx.font = `${fontSize}px ui-monospace, "SF Mono", Menlo, Consolas, monospace`;
-  const charW = ctx.measureText("M").width;
-  const gutter = charW * 5;
-  const railX = pad + gutter + 4;
-  const codeX = railX + 10;
-  const maxX = pad + bw - 10;
+  ctx.font = `${m.font}px ${EDITOR_FONT}`;
+  const charW = ctx.measureText("0").width;
+  const gutterRight = pad + charW * METRICS.gutterChars;
+  const railX = gutterRight + Math.round(charW * 0.55);
+  const railW = Math.max(2, Math.round(charW * 0.22));
+  const codeX = railX + Math.round(charW * 1.1);
+  const minimapX = pad + bw - m.minimap;
+  const maxX = (m.minimap ? minimapX : pad + bw) - charW;
 
   // Only the rows in view are drawn, offset by the fractional scroll so the
   // follow reads as a smooth crawl rather than a row-by-row jump.
-  const first = Math.max(0, Math.min(panel.lines.length - rows, Math.floor(scroll)));
-  const fraction = Math.max(0, Math.min(panel.lines.length - rows, scroll)) - first;
+  const rows = Math.min(m.rows, Math.max(1, panel.lines.length));
+  const span = Math.max(0, panel.lines.length - rows);
+  const first = Math.max(0, Math.min(span, Math.floor(scroll)));
+  const fraction = Math.max(0, Math.min(span, scroll)) - first;
+
   ctx.save();
   ctx.beginPath();
-  ctx.rect(pad, pad + bar, bw, area);
+  ctx.rect(pad, m.codeTop, bw, m.codeH);
   ctx.clip();
 
+  // Opening a screen paints the editor in: a bright rule travels down the
+  // viewport and rows appear as it passes them. A window filling, not blinking
+  // into existence.
+  const sweepY = motion.enter < 1 ? m.codeTop + m.codeH * easeOut(motion.enter) : Infinity;
+  const revealed = easeOut(motion.reveal);
+
   panel.lines.slice(first, first + rows + 1).forEach((line, i) => {
-    const top = pad + bar + (i - fraction) * lineH;
-    const y = top + lineH / 2;
+    const top = m.codeTop + (i - fraction) * m.lineH;
+    if (top > sweepY) return;
+    const y = top + m.lineH / 2;
+    const text = lineText(line);
+    /** This line is part of what the newest message changed. */
+    const fresh = motion.reveal < 1 && motion.fresh.has(line.n);
 
-    // Row tint: what changed in the last write.
+    // Row tint: what changed in the last write, then the current line, then
+    // what the traced call graph runs through.
     if (line.change === "add") {
-      ctx.fillStyle = "rgba(86,214,124,0.14)";
-      ctx.fillRect(pad, top, bw, lineH);
+      ctx.fillStyle = EDITOR.addedBg;
+      ctx.fillRect(pad, top, bw, m.lineH);
     } else if (line.change === "del") {
-      ctx.fillStyle = "rgba(224,85,92,0.14)";
-      ctx.fillRect(pad, top, bw, lineH);
+      ctx.fillStyle = EDITOR.removedBg;
+      ctx.fillRect(pad, top, bw, m.lineH);
+    } else if (line.n === panel.focusLine) {
+      ctx.fillStyle = EDITOR.activeLine;
+      ctx.fillRect(pad, top, bw, m.lineH);
     } else if (line.flow === "def") {
-      ctx.fillStyle = "rgba(127,208,255,0.07)";
-      ctx.fillRect(pad, top, bw, lineH);
+      ctx.fillStyle = EDITOR.flowDefBg;
+      ctx.fillRect(pad, top, bw, m.lineH);
     } else if (line.flow === "call") {
-      ctx.fillStyle = "rgba(198,120,221,0.08)";
-      ctx.fillRect(pad, top, bw, lineH);
+      ctx.fillStyle = EDITOR.flowCallBg;
+      ctx.fillRect(pad, top, bw, m.lineH);
     }
 
-    // Flow rail: what the traced call graph runs through.
+    // A line that just changed flashes and fades to its ordinary diff tint,
+    // so the eye lands on the newest edit without being told where it is.
+    if (fresh) {
+      ctx.fillStyle = `rgba(190,225,255,${0.34 * (1 - motion.reveal)})`;
+      ctx.fillRect(pad, top, bw, m.lineH);
+    }
+
+    // Indent guides, at the tab stops the tokenizer already normalises to.
+    const indent = text.length - text.trimStart().length;
+    if (indent > 0) {
+      ctx.fillStyle = EDITOR.indent;
+      for (let col = METRICS.tabSize; col < indent; col += METRICS.tabSize) {
+        ctx.fillRect(Math.round(codeX + col * charW), top, 1, m.lineH);
+      }
+    }
+
+    // Flow rail: the project's own layer, where a breakpoint gutter would be.
     if (line.flow) {
-      ctx.fillStyle = FLOW_HEX[line.flow] ?? "#7fd0ff";
-      ctx.fillRect(railX, top + 1, 3, Math.max(2, lineH - 2));
+      ctx.fillStyle =
+        line.flow === "def" ? EDITOR.flowDef : line.flow === "call" ? EDITOR.flowCall : EDITOR.flowBody;
+      ctx.fillRect(railX, top + 1, railW, Math.max(2, m.lineH - 2));
     }
 
-    // Gutter: line number, or the change sign.
+    // Line numbers, right-aligned, the current one brighter — VSCode exactly.
     ctx.textAlign = "right";
-    if (line.change === "add") {
-      ctx.fillStyle = "#56d67c";
-      ctx.fillText(`+${line.n}`, pad + gutter, y);
-    } else if (line.change === "del") {
-      ctx.fillStyle = "#e0555c";
-      ctx.fillText(`-${line.n}`, pad + gutter, y);
-    } else {
-      ctx.fillStyle = "#3f4c5c";
-      ctx.fillText(String(line.n), pad + gutter, y);
-    }
+    if (line.change === "add") ctx.fillStyle = EDITOR.addedFg;
+    else if (line.change === "del") ctx.fillStyle = EDITOR.removedFg;
+    else ctx.fillStyle = line.n === panel.focusLine ? EDITOR.gutterActive : EDITOR.gutter;
+    ctx.fillText(
+      line.change === "add" ? `+${line.n}` : line.change === "del" ? `-${line.n}` : String(line.n),
+      gutterRight,
+      y,
+    );
     ctx.textAlign = "left";
 
-    // Code.
+    // Code. A fresh line types itself in rather than appearing whole: the
+    // reveal is clipped from the left, at the same rate for every changed line
+    // so a hunk reads as one movement.
+    if (fresh) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(codeX - 2, top, Math.max(0, (maxX - codeX) * revealed + 3), m.lineH);
+      ctx.clip();
+    }
     let cx = codeX;
-    for (const span of line.spans) {
+    for (const s of line.spans) {
       if (cx > maxX) break;
-      ctx.fillStyle = line.change === "del" ? "#8d5f63" : TOKEN_HEX[span.c] ?? "#c8d4e0";
+      ctx.fillStyle = line.change === "del" ? EDITOR.removedFadedFg : TOKEN_COLORS[s.c] ?? EDITOR.fg;
       const room = Math.max(0, Math.floor((maxX - cx) / charW));
       if (room <= 0) break;
-      ctx.fillText(span.t.slice(0, room), cx, y);
-      cx += span.t.length * charW;
+      ctx.fillText(s.t.slice(0, room), cx, y);
+      cx += s.t.length * charW;
     }
     if (line.change === "del") {
-      ctx.strokeStyle = "rgba(224,85,92,0.45)";
+      ctx.strokeStyle = EDITOR.removedFg;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(codeX, y);
       ctx.lineTo(Math.min(maxX, cx), y);
       ctx.stroke();
     }
+    if (fresh) ctx.restore();
   });
+
+  // The leading edge of the opening sweep.
+  if (motion.enter < 1) {
+    const fade = ctx.createLinearGradient(0, sweepY - m.lineH * 3, 0, sweepY);
+    fade.addColorStop(0, "rgba(120,190,255,0)");
+    fade.addColorStop(1, "rgba(120,190,255,0.28)");
+    ctx.fillStyle = fade;
+    const from = Math.max(m.codeTop, sweepY - m.lineH * 3);
+    ctx.fillRect(pad, from, bw, sweepY - from);
+    ctx.fillStyle = "rgba(205,232,255,0.8)";
+    ctx.fillRect(pad, sweepY - 1, bw, 1.5);
+  }
   ctx.restore();
 
-  // Scrollbar: where this window sits in the buffer.
-  if (panel.lines.length > rows) {
-    const trackH = area;
-    const thumbH = Math.max(14, (rows / panel.lines.length) * trackH);
-    const t = first / Math.max(1, panel.lines.length - rows);
-    ctx.fillStyle = "rgba(122,152,184,0.14)";
-    ctx.fillRect(pad + bw - 5, pad + bar, 3, trackH);
-    ctx.fillStyle = "rgba(127,208,255,0.55)";
-    ctx.fillRect(pad + bw - 5, pad + bar + t * (trackH - thumbH), 3, thumbH);
+  // ------------------------------------------------------------------ minimap
+  // The whole buffer at a glance, drawn as VSCode draws it: one short row per
+  // line, token-coloured, with the viewport as a slider over it. On a screen
+  // too narrow to spare the width it degrades to a scrollbar.
+  if (m.minimap) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(minimapX, m.codeTop, m.minimap, m.codeH);
+    ctx.clip();
+    const rowH = Math.min(3, m.codeH / Math.max(1, panel.lines.length));
+    const scale = m.minimap / 96;
+    ctx.globalAlpha = 0.62;
+    panel.lines.forEach((line, i) => {
+      const top = m.codeTop + i * rowH;
+      if (top > m.codeTop + m.codeH) return;
+      let col = 0;
+      for (const s of line.spans) {
+        if (s.c !== "plain") {
+          ctx.fillStyle = TOKEN_COLORS[s.c] ?? EDITOR.fg;
+          ctx.fillRect(minimapX + col * scale, top, Math.max(scale, s.t.length * scale), Math.max(1, rowH - 1));
+        }
+        col += s.t.length;
+        if (col * scale > m.minimap) break;
+      }
+    });
+    ctx.globalAlpha = 1;
+    if (panel.lines.length > rows) {
+      const total = rowH * panel.lines.length;
+      ctx.fillStyle = EDITOR.minimapSlider;
+      ctx.fillRect(minimapX, m.codeTop + (first / panel.lines.length) * total, m.minimap, (rows / panel.lines.length) * total);
+    }
+    ctx.restore();
+  } else if (panel.lines.length > rows) {
+    const thumb = Math.max(14, (rows / panel.lines.length) * m.codeH);
+    const t = first / Math.max(1, span);
+    ctx.fillStyle = EDITOR.scrollbar;
+    ctx.fillRect(pad + bw - 5, m.codeTop + t * (m.codeH - thumb), 3, thumb);
   }
 
-  // ---- footer
-  ctx.fillStyle = "rgba(16,22,30,0.98)";
-  ctx.fillRect(pad, pad + bh - foot, bw, foot);
-  ctx.font = `${Math.round(foot * 0.5)}px ui-monospace, Menlo, monospace`;
-  ctx.fillStyle = "#4a5768";
+  // --------------------------------------------------------------- status bar
+  const statusY = pad + bh - m.status;
+  ctx.fillStyle = EDITOR.statusBar;
+  ctx.fillRect(pad, statusY, bw, m.status);
+  ctx.fillStyle = EDITOR.border;
+  ctx.fillRect(pad, statusY, bw, 1);
+  ctx.font = `${Math.round(m.font * 0.8)}px ${EDITOR_FONT}`;
+  ctx.fillStyle = EDITOR.statusFg;
   const label = panel.file.length > 52 ? "…" + panel.file.slice(-51) : panel.file;
-  ctx.fillText(label, pad + 10, pad + bh - foot / 2);
-  const hint = hovered
+  ctx.fillText(label, pad + m.font * 0.7, statusY + m.status / 2);
+  const right = hovered
     ? "hold to grab · wheel to push/pull · double-click to open"
     : panel.unsaved
-      ? `${panel.totalLines} lines · editing now`
-      : `${panel.totalLines} lines`;
-  ctx.fillStyle = hovered ? "#7fd0ff" : "#4a5768";
+      ? `Ln ${panel.focusLine} · unsaved · ${panel.totalLines} lines`
+      : `Ln ${panel.focusLine}  Spaces: ${METRICS.tabSize}  ${panel.language}  ${panel.totalLines} lines`;
+  ctx.fillStyle = hovered ? "#cfe6ff" : EDITOR.statusFg;
   ctx.textAlign = "right";
-  ctx.fillText(hint, pad + bw - 10, pad + bh - foot / 2);
+  ctx.fillText(right, pad + bw - m.font * 0.7, statusY + m.status / 2);
   ctx.textAlign = "left";
   ctx.restore();
 
   // ---- frame
-  ctx.strokeStyle = panel.unsaved
-    ? "rgba(120,215,255,0.95)"
-    : panel.heat > 0.05
-      ? `rgba(255,186,80,${0.5 + panel.heat * 0.5})`
-      : hovered
-        ? "rgba(127,208,255,0.9)"
-        : panel.active
-          ? "rgba(120,190,240,0.6)"
-          : "rgba(84,112,142,0.42)";
-  ctx.lineWidth = hovered || panel.heat > 0.05 || panel.unsaved ? 2.5 : 1.4;
+  // A change pulses it: the same "look here" the tab strip gives, at a size
+  // that carries from across the scene.
+  const pulse = 1 - motion.reveal;
+  ctx.strokeStyle =
+    pulse > 0.01
+      ? `rgba(150,205,255,${0.5 + 0.5 * pulse})`
+      : panel.unsaved
+        ? EDITOR.dirty
+        : panel.heat > 0.05
+          ? `rgba(255,186,80,${0.5 + panel.heat * 0.5})`
+          : hovered
+            ? EDITOR.tabAccent
+            : panel.active
+              ? "rgba(0,120,212,0.6)"
+              : EDITOR.border;
+  ctx.lineWidth = (hovered || panel.heat > 0.05 || panel.unsaved ? 2.5 : 1.4) + pulse * 2.2;
   // Dashed while dirty — the same visual grammar every editor uses for "not
   // written yet".
   if (panel.unsaved) ctx.setLineDash([9, 5]);
-  roundRect(ctx, pad, pad, bw, bh, 9);
+  roundRect(ctx, pad, pad, bw, bh, 7);
   ctx.stroke();
   ctx.setLineDash([]);
 }
@@ -337,15 +438,21 @@ function Panel({
   count,
   onGrab,
   held,
+  exiting = false,
 }: {
   panel: CodePanel;
   index: number;
   count: number;
   onGrab: (target: { id: string; position: [number, number, number] }) => void;
   held: boolean;
+  /** The file lost its slot: this screen is closing, not open. */
+  exiting?: boolean;
 }) {
   const group = useRef<Group>(null);
+  const material = useRef<MeshBasicMaterial>(null);
   const born = useRef(performance.now());
+  const closedAt = useRef<number | null>(null);
+  if (exiting && closedAt.current === null) closedAt.current = performance.now();
   const [hovered, setHovered] = useState(false);
   const moved = useStore((s) => s.panelPos[panel.file]);
   const faced = useStore((s) => s.panelRot[panel.file]);
@@ -373,13 +480,26 @@ function Panel({
     faced ?? (moved ? panel.rotY : screenLayout === "stagger" ? panel.rotY : slot.rotY);
 
   /**
+   * How many rows this screen shows.
+   *
+   * Resolved from the screen's own pixel size, not from `panel.rows`: the
+   * server cannot know how large the viewer scaled its screens, and a line box
+   * is a fixed height here — so the row count is a property of the screen, and
+   * the server's figure is only the buffer it sized around it.
+   */
+  const rows = useMemo(
+    () => editorMetrics(width, height, PX_PER_UNIT).rows,
+    [width, height],
+  );
+
+  /**
    * The scroll position, in buffer lines. It chases `focusLine` so an edit
    * anywhere in the file scrolls the screen to it — a tail, not a jump.
    */
   const target = useMemo(() => {
-    const centred = panel.focusLine - panel.firstLine - Math.floor(panel.rows / 2);
-    return Math.max(0, Math.min(panel.lines.length - panel.rows, centred));
-  }, [panel.focusLine, panel.firstLine, panel.rows, panel.lines.length]);
+    const centred = panel.focusLine - panel.firstLine - Math.floor(rows / 2);
+    return Math.max(0, Math.min(panel.lines.length - rows, centred));
+  }, [panel.focusLine, panel.firstLine, rows, panel.lines.length]);
 
   const scroll = useRef(target);
 
@@ -398,7 +518,25 @@ function Panel({
     surface: unknown;
     scroll: number;
     hovered: boolean;
-  }>({ panel: null, surface: null, scroll: Number.NaN, hovered: false });
+    enter: number;
+    reveal: number;
+  }>({ panel: null, surface: null, scroll: Number.NaN, hovered: false, enter: -1, reveal: -1 });
+
+  /** What the last message actually changed, and when it landed. */
+  const motion = useRef<{ at: number; fresh: Set<number>; content: CodePanel | null }>({
+    at: 0,
+    fresh: new Set(),
+    content: null,
+  });
+
+  if (motion.current.content !== panel) {
+    const fresh = freshLines(motion.current.content, panel);
+    motion.current.content = panel;
+    if (fresh.size) {
+      motion.current.fresh = fresh;
+      motion.current.at = performance.now();
+    }
+  }
 
   // The canvas is owned and repainted in place: scrolling, and now typing,
   // must not rebuild a texture.
@@ -417,12 +555,35 @@ function Panel({
   useFrame((state, dt) => {
     const g = group.current;
     if (!g) return;
+    const now = performance.now();
 
-    // ---- entry settle
-    const age = (performance.now() - born.current) / 1000;
-    const ease = 1 - Math.pow(1 - Math.min(1, age / 0.4), 3);
-    g.position.set(position[0], position[1] + (1 - ease) * 0.3, position[2]);
-    g.scale.setScalar((0.94 + 0.06 * ease) * (held ? 1.06 : hovered ? 1.03 : 1));
+    // ---- opening, and closing
+    //
+    // A screen rises into its slot and fades up over `MOTION.enter`; one that lost
+    // its slot sinks and fades out over `MOTION.leave` instead of vanishing between
+    // two frames. Both are the same curve, so a file that appears and is gone
+    // again reads as one gesture.
+    const enter = Math.min(1, (now - born.current) / 1000 / MOTION.enter);
+    const leave = closedAt.current === null ? 0 : Math.min(1, (now - closedAt.current) / 1000 / MOTION.leave);
+    const rise = easeOut(enter);
+    g.position.set(
+      position[0],
+      position[1] + (1 - rise) * 0.34 - easeOut(leave) * 0.3,
+      position[2] - (1 - rise) * 0.25,
+    );
+    // A touch of overshoot on the way in: it arrives, it does not slide to a halt.
+    const spring = 1 + 0.045 * Math.sin(Math.PI * rise) * (1 - rise);
+    g.scale.setScalar(
+      (0.9 + 0.1 * rise) * spring * (1 - 0.14 * easeOut(leave)) * (held ? 1.06 : hovered ? 1.03 : 1),
+    );
+    if (material.current) {
+      // Fades up ahead of the sweep, so the window is there before the code is.
+      material.current.opacity = Math.min(1, enter * 2.2) * (1 - easeOut(leave));
+    }
+
+    const reveal = motion.current.fresh.size
+      ? Math.min(1, (now - motion.current.at) / 1000 / MOTION.reveal)
+      : 1;
 
     // ---- follow the newest change
     const wanted = tail ? target : scroll.current;
@@ -432,18 +593,23 @@ function Panel({
       scroll.current = wanted;
     }
 
-    // Repaint when the content, the scroll or the hover state has actually
-    // moved — and always after a resize, since that canvas starts empty.
+    // Repaint when the content, the scroll, the hover state or a transition has
+    // actually moved — and always after a resize, since that canvas starts
+    // empty. Comparing the transition values rather than testing `< 1` is what
+    // guarantees one final frame at rest, with no sweep line left drawn on it.
     const last = drawn.current;
     if (
       last.panel !== panel ||
       last.surface !== surface ||
       last.hovered !== hovered ||
+      last.enter !== enter ||
+      last.reveal !== reveal ||
       Math.abs(last.scroll - scroll.current) > 0.02
     ) {
-      draw(panel, hovered, scroll.current, surface.ctx, surface.w, surface.h);
+      const shape = enter >= 1 && reveal >= 1 ? OPEN : { enter, reveal, fresh: motion.current.fresh };
+      draw(panel, hovered, scroll.current, shape, surface.ctx, surface.w, surface.h);
       surface.texture.needsUpdate = true;
-      drawn.current = { panel, surface, scroll: scroll.current, hovered };
+      drawn.current = { panel, surface, scroll: scroll.current, hovered, enter, reveal };
     }
 
     // ---- a held screen turns to face you, as a grabbed panel does in a headset
@@ -467,6 +633,9 @@ function Panel({
   return (
     <group ref={group} name={`panel:${panel.file}`} position={position} rotation={[0, rotY, 0]}>
       <mesh
+        // A closing screen is a farewell, not a target: it must not swallow the
+        // pointer on its way out.
+        raycast={exiting ? () => {} : undefined}
         onPointerOver={(e) => {
           stop(e);
           setHovered(true);
@@ -491,8 +660,10 @@ function Panel({
       >
         <planeGeometry args={size} />
         <meshBasicMaterial
+          ref={material}
           map={surface.texture}
           transparent
+          opacity={0}
           side={DoubleSide}
           depthWrite={false}
           toneMapped={false}
@@ -500,6 +671,13 @@ function Panel({
       </mesh>
     </group>
   );
+}
+
+/** A screen still on stage after its file lost the slot, with the slot it had. */
+interface Closing {
+  panel: CodePanel;
+  index: number;
+  count: number;
 }
 
 export function CodePanels({ scene }: { scene: SceneGraph }) {
@@ -529,6 +707,43 @@ export function CodePanels({ scene }: { scene: SceneGraph }) {
   );
   const { grab, heldId } = useScreenGrab(movePanel, onClickScreen);
 
+  /**
+   * Screens on their way out.
+   *
+   * Slots are handed to whatever changed most recently, so a screen loses its
+   * place whenever a new file becomes interesting. Dropping it from the scene
+   * graph the instant that happens is the "single frame refresh" this replaces:
+   * the screen is kept, in the slot it held, for exactly as long as it takes to
+   * fade out — and taken back off the list the moment its file returns.
+   */
+  const [closing, setClosing] = useState<Closing[]>([]);
+  const shown = useRef<CodePanel[]>([]);
+
+  useEffect(() => {
+    const live = new Set(scene.panels.map((p) => p.file));
+    const gone: Closing[] = shown.current
+      .map((panel, index) => ({ panel, index, count: shown.current.length }))
+      .filter((entry) => !live.has(entry.panel.file));
+    shown.current = scene.panels;
+
+    setClosing((current) => {
+      const kept = current.filter(
+        (entry) => !live.has(entry.panel.file) && !gone.some((g) => g.panel.file === entry.panel.file),
+      );
+      return kept.length === current.length && !gone.length ? current : [...kept, ...gone];
+    });
+    if (!gone.length) return;
+
+    const timer = setTimeout(
+      () =>
+        setClosing((current) =>
+          current.filter((entry) => !gone.some((g) => g.panel.file === entry.panel.file)),
+        ),
+      MOTION.leave * 1000 + 80,
+    );
+    return () => clearTimeout(timer);
+  }, [scene.panels]);
+
   return (
     <group name="code-panels">
       {scene.panels.map((panel, i) => (
@@ -539,6 +754,17 @@ export function CodePanels({ scene }: { scene: SceneGraph }) {
           count={scene.panels.length}
           onGrab={grab}
           held={heldId === panel.file}
+        />
+      ))}
+      {closing.map((entry) => (
+        <Panel
+          key={`closing:${entry.panel.file}`}
+          panel={entry.panel}
+          index={entry.index}
+          count={entry.count}
+          onGrab={grab}
+          held={false}
+          exiting
         />
       ))}
     </group>

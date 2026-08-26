@@ -8,7 +8,7 @@ import { readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
 import type { FileEvent, FileEventKind } from "../shared/protocol";
 import { languageOf, toPosix } from "./analyzer";
-import { Ignore, IGNORED_DIRS } from "./ignore";
+import { Ignore, IGNORED_DIRS, isIgnoreFile } from "./ignore";
 
 export { IGNORED_DIRS };
 
@@ -158,7 +158,16 @@ export function startWatcher(
 
   const push = async (kind: FileEventKind, abs: string) => {
     const rel = toPosix(relative(root, abs));
-    if (!rel || rel.startsWith("..") || isIgnored(rel)) return;
+    if (!rel || rel.startsWith("..")) return;
+    // A `.gitignore` changed: every decision below it changed with it. Re-read
+    // before deciding this event, and re-offer the tree to chokidar — a path
+    // the old rules excluded was never watched, so un-ignoring it has to be
+    // followed by a traversal or it stays invisible until the next scan.
+    if (isIgnoreFile(rel)) {
+      ignore.reload();
+      watcher.add(root);
+    }
+    if (isIgnored(rel)) return;
     let size = 0;
     if (kind === "add" || kind === "change") {
       size = await stat(abs).then((s) => s.size).catch(() => 0);
@@ -185,6 +194,8 @@ export function startWatcher(
     await Promise.all(
       [...hot.keys()].map(async (rel) => {
         try {
+          // A rules change can make an on-screen file ignored under us.
+          if (isIgnored(rel, false)) return;
           const info = await stat(join(root, rel));
           const seen = hot.get(rel);
           if (!seen) return;

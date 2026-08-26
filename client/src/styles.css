@@ -62,11 +62,30 @@ html, body, #root {
 .ev.k-add { border-left-color: #4bd28a; }
 .ev.k-unlink, .ev.k-unlinkDir { border-left-color: #e0555c; }
 /* A write that just landed flashes once, so a change is never missed. */
-.ev.fresh { animation: land 1.6s ease-out; }
+.ev.fresh { animation: land 1.6s ease-out, arrive 260ms ease-out; }
 @keyframes land {
   0% { background: rgba(127, 208, 255, 0.22); }
   100% { background: transparent; }
 }
+/* A row that just landed arrives from somewhere. Same idea as the screens in
+   the scene: new content is a movement you can follow, not a repaint you have
+   to notice after the fact. */
+@keyframes arrive {
+  from { opacity: 0; transform: translateY(-7px); }
+  to { opacity: 1; transform: none; }
+}
+/* The changed lines under a row wipe in from the left, exactly as the screens
+   paint a fresh line in. */
+@keyframes wipe-in {
+  from { clip-path: inset(0 100% 0 0); }
+  to { clip-path: inset(0); }
+}
+.ev.fresh .hunk-line { animation: wipe-in 420ms ease-out both; }
+.ev.fresh .hunk-line:nth-child(2) { animation-delay: 45ms; }
+.ev.fresh .hunk-line:nth-child(3) { animation-delay: 90ms; }
+.ev.fresh .hunk-line:nth-child(4) { animation-delay: 135ms; }
+.ev.fresh .hunk-line:nth-child(5) { animation-delay: 180ms; }
+.ev.fresh .hunk-line:nth-child(6) { animation-delay: 225ms; }
 
 .ev-head { display: flex; align-items: center; gap: 7px; padding: 3px 9px; }
 .ev-kind { font-size: 9.5px; letter-spacing: 0.6px; color: var(--dim); width: 34px; flex: none; }
@@ -84,6 +103,7 @@ html, body, #root {
 .ev-delta b { color: #56d67c; font-weight: 400; }
 .ev-delta em { color: #e0555c; font-style: normal; }
 .ev-self { color: var(--accent); font-size: 10px; flex: none; }
+.ev-seeded { color: var(--dimmer); font-size: 10px; flex: none; }
 .ev-age { color: var(--dimmer); font-size: 10px; flex: none; min-width: 26px; text-align: right; }
 .ev-expand { background: none; border: 0; color: var(--dimmer); cursor: pointer; font: inherit; padding: 0 2px; flex: none; }
 .ev-expand:hover { color: var(--accent); }
@@ -92,11 +112,11 @@ html, body, #root {
 .hunk-line { display: grid; grid-template-columns: 12px 34px 1fr; gap: 4px; }
 .hunk-line code { white-space: pre; overflow: hidden; text-overflow: ellipsis; }
 .hunk-sign { text-align: center; }
-.hunk-no { text-align: right; color: #3f4c5c; }
-.hk-add { background: rgba(86, 214, 124, 0.1); }
-.hk-add .hunk-sign, .hk-add code { color: #86e0a2; }
-.hk-del { background: rgba(224, 85, 92, 0.1); }
-.hk-del .hunk-sign, .hk-del code { color: #e88e93; }
+.hunk-no { text-align: right; color: var(--ed-gutter); }
+.hk-add { background: var(--ed-added-bg); }
+.hk-add .hunk-sign, .hk-add code { color: var(--ed-added-fg); }
+.hk-del { background: var(--ed-removed-bg); }
+.hk-del .hunk-sign, .hk-del code { color: var(--ed-removed-fg); }
 .hunk-more { color: var(--dimmer); padding-left: 50px; }
 
 .feed-foot {
@@ -400,40 +420,45 @@ html, body, #root {
   flex: none;
 }
 
-/* Syntax colours, shared by flat mode's reader and its editor mirror. */
-.tk-plain { color: #c8d4e0; }
-.tk-keyword { color: #c678dd; }
-.tk-string { color: #98c379; }
-.tk-comment { color: #5b6675; }
-.tk-number { color: #d19a66; }
-.tk-fn { color: #61afef; }
-.tk-type { color: #e5c07b; }
-.tk-punct { color: #9aa8b8; }
-.tk-op { color: #56b6c2; }
+/* Syntax colours. Every value here comes from client/src/lib/editorTheme.ts,
+   published as CSS variables at boot — the canvas screens and these DOM
+   surfaces are meant to be the same editor, and two hex lists drift. */
+.tk-plain { color: var(--tk-plain); }
+.tk-ident { color: var(--tk-ident); }
+.tk-keyword { color: var(--tk-keyword); }
+.tk-control { color: var(--tk-control); }
+.tk-string { color: var(--tk-string); }
+.tk-comment { color: var(--tk-comment); }
+.tk-number { color: var(--tk-number); }
+.tk-fn { color: var(--tk-fn); }
+.tk-type { color: var(--tk-type); }
+.tk-punct { color: var(--tk-punct); }
+.tk-op { color: var(--tk-op); }
 
 /* One source line, in flat mode: gutter, flow rail, code. */
-.scr-line { display: grid; grid-template-columns: 44px 3px 1fr; align-items: baseline; padding-right: 12px; }
-.scr-gutter { text-align: right; padding-right: 8px; color: #3f4c5c; user-select: none; }
+.scr-line { display: grid; grid-template-columns: var(--ed-gutter-width) 3px 1fr; align-items: baseline; padding-right: 12px; }
+.scr-gutter { text-align: right; padding-right: 8px; color: var(--ed-gutter); user-select: none; }
 .scr-flow { align-self: stretch; background: transparent; }
-.scr-line code { white-space: pre; padding-left: 8px; }
+.scr-line code { white-space: pre; padding-left: 10px; tab-size: var(--ed-tab-size); }
 
 /* What flowed. */
-.scr-line.fl-def .scr-flow { background: #7fd0ff; box-shadow: 0 0 7px rgba(127, 208, 255, 0.8); }
-.scr-line.fl-call .scr-flow { background: #c678dd; box-shadow: 0 0 7px rgba(198, 120, 221, 0.7); }
-.scr-line.fl-body .scr-flow { background: rgba(127, 208, 255, 0.28); }
-.scr-line.fl-def { background: rgba(127, 208, 255, 0.06); }
-.scr-line.fl-call { background: rgba(198, 120, 221, 0.07); }
+.scr-line.fl-def .scr-flow { background: var(--ed-flow-def); }
+.scr-line.fl-call .scr-flow { background: var(--ed-flow-call); }
+.scr-line.fl-body .scr-flow { background: var(--ed-flow-body); }
+.scr-line.fl-def { background: var(--ed-flow-def-bg); }
+.scr-line.fl-call { background: var(--ed-flow-call-bg); }
 
 /* What changed. */
-.scr-line.ch-add { background: rgba(86, 214, 124, 0.13); }
-.scr-line.ch-add .scr-gutter { color: #56d67c; }
-.scr-line.ch-del { background: rgba(224, 85, 92, 0.13); opacity: 0.72; }
-.scr-line.ch-del .scr-gutter { color: #e0555c; }
+.scr-line.ch-add { background: var(--ed-added-bg); }
+.scr-line.ch-add .scr-gutter { color: var(--ed-added-fg); }
+.scr-line.ch-del { background: var(--ed-removed-bg); }
+.scr-line.ch-del .scr-gutter { color: var(--ed-removed-fg); }
+.scr-line.ch-del code { color: var(--ed-removed-faded-fg); text-decoration: line-through; }
 
 .scr-delta { display: flex; gap: 5px; font-size: 12px; }
-.scr-delta b { color: #56d67c; font-weight: 600; }
-.scr-delta em { color: #e0555c; font-style: normal; }
-.scr-dirty { color: var(--hot); }
+.scr-delta b { color: var(--ed-added-fg); font-weight: 600; }
+.scr-delta em { color: var(--ed-removed-fg); font-style: normal; }
+.scr-dirty { color: var(--ed-dirty); }
 
 /* Editor: transparent textarea over a highlighted mirror. */
 .scr-mirror,
@@ -441,22 +466,22 @@ html, body, #root {
   position: absolute;
   inset: 0;
   margin: 0;
-  font-family: var(--mono);
+  font-family: var(--ed-font);
   white-space: pre;
   overflow: auto;
   border: 0;
-  tab-size: 2;
+  tab-size: var(--ed-tab-size);
 }
-.scr-mirror { color: #c8d4e0; pointer-events: none; }
-.scr-mline { min-height: 1.55em; }
+.scr-mirror { color: var(--tk-plain); pointer-events: none; }
+.scr-mline { min-height: calc(var(--ed-font-size) * var(--ed-line-height)); }
 .scr-area {
   background: transparent;
   color: transparent;
-  caret-color: #7fd0ff;
+  caret-color: var(--ed-fg);
   resize: none;
   outline: none;
 }
-.scr-area::selection { background: rgba(127, 208, 255, 0.32); }
+.scr-area::selection { background: var(--ed-selection, #264f78); }
 
 /* ------------------------------------------------------------ stats block */
 .stat-row { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -526,36 +551,56 @@ html, body, #root {
 .rail button.wide { width: 100%; margin-top: 6px; }
 
 /* ------------------------------------------------------------- flat mode */
+/* Flat mode is the same editor as the screens, at desk distance: VSCode's
+   chrome, VSCode's palette, one line box per line — read from the variables
+   editorTheme.ts publishes, so the two surfaces cannot drift. */
 .flat {
   position: absolute;
   inset: 0;
   z-index: 40;
-  display: grid;
-  grid-template-rows: auto auto auto 1fr auto;
-  background: rgba(5, 8, 12, 0.985);
-  backdrop-filter: blur(3px);
-  font-family: var(--mono);
+  /* A column, not a row template: the error banner and the conflict banner are
+     both conditional, so a fixed `auto auto auto 1fr auto` handed the `1fr` to
+     whichever row happened to exist and left a short file floating above a
+     stripe of empty background. The editor fills the window, whatever the file
+     is — and the status bar sits on the bottom edge where a status bar goes. */
+  display: flex;
+  flex-direction: column;
+  background: var(--ed-bg);
+  font-family: var(--ed-font);
 }
+.flat > header, .flat > footer, .flat-error, .flat-conflict { flex: none; }
 .flat > header {
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--line);
+  padding: 0 14px;
+  min-height: 36px;
+  background: var(--ed-tab-bar);
+  border-bottom: 1px solid var(--ed-border);
 }
-.flat-file { color: #eaf4ff; font-weight: 600; }
-.flat-meta { color: var(--dimmer); font-size: 11px; }
+/* The open file, drawn as the active tab it is. */
+.flat-file {
+  color: var(--ed-fg);
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  margin-left: -14px;
+  padding: 0 14px;
+  background: var(--ed-tab-active);
+  border-top: 2px solid var(--ed-tab-accent);
+}
+.flat-meta { color: var(--ed-status-fg); font-size: 11px; }
 .flat-actions { margin-left: auto; display: flex; gap: 6px; }
 .flat-actions button {
-  background: rgba(22, 30, 40, 0.9);
-  border: 1px solid var(--line);
-  color: var(--dim);
+  background: var(--ed-bg);
+  border: 1px solid var(--ed-border);
+  color: var(--ed-status-fg);
   font: inherit;
   font-size: 11px;
   padding: 4px 11px;
   cursor: pointer;
 }
-.flat-actions button:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+.flat-actions button:hover:not(:disabled) { border-color: var(--ed-tab-accent); color: #fff; }
 .flat-actions button:disabled { opacity: 0.4; cursor: default; }
 .flat-actions button.hot { border-color: #ffb648; color: #ffdca8; background: rgba(92, 58, 12, 0.7); }
 .flat-close { font-size: 13px !important; padding: 3px 10px !important; }
@@ -576,34 +621,57 @@ html, body, #root {
   font: inherit; font-size: 11px; padding: 3px 9px; cursor: pointer;
 }
 
-.flat-body { overflow: hidden; min-height: 0; display: grid; }
-.flat-loading { place-self: center; color: var(--dim); }
-.flat-read { overflow: auto; padding: 8px 0; font-size: 13px; line-height: 1.55; }
-.flat-read .scr-line { grid-template-columns: 60px 3px 1fr; }
+.flat-body { flex: 1; overflow: hidden; min-height: 0; display: grid; background: var(--ed-bg); }
+.flat-loading { place-self: center; color: var(--ed-status-fg); }
+.flat-read {
+  overflow: auto;
+  padding: 6px 0;
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+  color: var(--tk-plain);
+}
+/* An added line flashes once as it appears and settles into its diff tint —
+   the DOM half of the reveal the screens draw on their canvas. */
+@keyframes line-in {
+  from { background: rgba(190, 225, 255, 0.34); }
+  to { background: var(--ed-added-bg); }
+}
+.flat-read .scr-line.ch-add { animation: line-in 600ms ease-out; }
 
-.flat-edit { display: grid; grid-template-columns: 60px 1fr; overflow: hidden; min-height: 0; }
+/* Read mode is view mode: no caret, but the line you were sent to is still the
+   line VSCode would have put the cursor on. */
+.flat-read .scr-line.is-focus { background: var(--ed-active-line); }
+.flat-read .scr-line.is-focus .scr-gutter { color: var(--ed-gutter-active); }
+
+.flat-edit { display: grid; grid-template-columns: var(--ed-gutter-width) 1fr; overflow: hidden; min-height: 0; }
 .flat-gutter {
   overflow: hidden;
-  padding: 8px 8px 8px 0;
+  padding: 6px 8px 6px 0;
   text-align: right;
-  color: #3f4c5c;
-  font-size: 13px;
-  line-height: 1.55;
+  color: var(--ed-gutter);
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
   user-select: none;
-  border-right: 1px solid var(--line);
 }
 .flat-editwrap { position: relative; overflow: hidden; }
 .flat-edit .scr-mirror,
-.flat-edit .scr-area { padding: 8px 14px; font-size: 13px; line-height: 1.55; }
+.flat-edit .scr-area {
+  padding: 6px 10px;
+  font-size: var(--ed-font-size);
+  line-height: var(--ed-line-height);
+}
 
+/* VSCode's status bar, saying what VSCode's status bar says. */
 .flat > footer {
   display: flex; justify-content: space-between; gap: 12px;
-  padding: 6px 14px;
-  border-top: 1px solid var(--line);
-  color: var(--dimmer);
+  padding: 3px 14px;
+  background: var(--ed-status-bar);
+  border-top: 1px solid var(--ed-border);
+  color: var(--ed-status-fg);
   font-size: 11px;
 }
-.flat > footer b { color: var(--accent); font-weight: 400; }
+.flat > footer b { color: var(--ed-fg); font-weight: 400; }
+.flat-status { display: flex; gap: 12px; white-space: pre; }
 
 /* =================================================================== HUD */
 /* A game's status strip: always readable, never in the way. */
@@ -895,3 +963,15 @@ html, body, #root {
 .live-row.off { color: var(--dimmer); }
 .live-row em { font-style: normal; }
 .drawer-col code { font-size: 10px; padding: 1px 4px; background: rgba(122, 152, 184, 0.14); }
+
+/* ---------------------------------------------------------- reduced motion */
+/* Every transition here is there to say "this just changed"; none of them
+   carries information you cannot also read from the colour it settles on. So
+   when the system asks for less movement, they all stop. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

@@ -19,6 +19,11 @@ export interface FileEvent {
   /** True when this is an unsaved editor buffer rather than a write to disk. */
   unsaved?: boolean;
   /**
+   * Reconstructed from disk mtime when the repo was opened, not observed by the
+   * watcher. The write was real; we simply were not running when it happened.
+   */
+  seeded?: boolean;
+  /**
    * A second notification of a write already applied — the content on disk is
    * byte-identical to what we hold. Dropped before it reaches the feed.
    */
@@ -134,16 +139,30 @@ export interface CodeLine {
   nodeId?: string;
 }
 
-export type TokenClass =
-  | "plain"
-  | "keyword"
-  | "string"
-  | "comment"
-  | "number"
-  | "fn"
-  | "type"
-  | "punct"
-  | "op";
+/**
+ * Token classes, as a value: every code surface (the canvas screens, flat
+ * mode's reader, flat mode's editor mirror) has to colour all of them, and a
+ * bare union type cannot be iterated to check that they do.
+ *
+ * The split follows what a real editor theme distinguishes — a declaration
+ * keyword (`const`, `function`) is not coloured like a control keyword
+ * (`return`, `if`), and a plain identifier is not coloured like whitespace.
+ */
+export const TOKEN_CLASSES = [
+  "plain",
+  "ident",
+  "keyword",
+  "control",
+  "string",
+  "comment",
+  "number",
+  "fn",
+  "type",
+  "punct",
+  "op",
+] as const;
+
+export type TokenClass = (typeof TOKEN_CLASSES)[number];
 
 /** A floating editor screen. */
 export interface CodePanel {

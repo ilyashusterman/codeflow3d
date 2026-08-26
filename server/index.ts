@@ -14,6 +14,7 @@ import { RepoAnalyzer, isTracked } from "./analyzer";
 import { UnsavedWatcher } from "./unsaved";
 import { DEFAULT_LAYOUT, layout, type LayoutCache, type LayoutConfig } from "./layout";
 import { IGNORED_DIRS, startWatcher, walkRepo, type WatcherHandle } from "./watcher";
+import { Ignore } from "./ignore";
 
 // ------------------------------------------------------------------ arguments
 
@@ -431,7 +432,26 @@ async function openRepo(rawPath: string) {
   broadcast({ t: "status", phase: "analyzing", detail: "resolving the call graph" });
   await new Promise((r) => setTimeout(r, 0));
 
-  const scene = rebuild();
+  // Seed the change log from disk mtime.
+  //
+  // The feed only ever held what the watcher saw, so every fresh start — and
+  // `bun --watch` restarts this process on its own source — showed "watching
+  // for writes" and nothing else, however recently you had saved. These are
+  // real writes with real timestamps; they just predate us, so they are marked
+  // `seeded` rather than passed off as observed events.
+  const seeded: FileEvent[] = [...session.analyzer.fileMap.values()]
+    .sort((a, b) => b.mtime - a.mtime)
+    .slice(0, 12)
+    .map((f) => ({
+      kind: "change" as const,
+      path: f.path,
+      at: f.mtime,
+      size: f.bytes,
+      language: f.language,
+      seeded: true,
+    }));
+
+  const scene = rebuild(seeded);
   log(
     `[scan] done in ${Math.round(performance.now() - t0)}ms — ` +
       `${scene.stats.nodes} defs, ${scene.stats.edges} calls ` +
@@ -584,16 +604,25 @@ export interface DirInfo {
   readable: boolean;
 }
 
-/** One shallow readdir per row: enough signal for the picker, cheap enough to batch. */
-async function describeDir(abs: string, name: string): Promise<DirInfo> {
+/**
+ * One shallow readdir per row: enough signal for the picker, cheap enough to
+ * batch.
+ *
+ * `ignore` is the browsed directory's own rules and `prefix` says where this row
+ * sits inside it, so the subdirectory count means the same thing the walk would
+ * mean by it — a repository that gitignores its `dist/` does not advertise it
+ * here as something worth descending into.
+ */
+async function describeDir(abs: string, name: string, ignore: Ignore, prefix: string): Promise<DirInfo> {
   try {
     const entries = await readdir(abs, { withFileTypes: true });
     let sourceFiles = 0;
     let subdirs = 0;
     let marker: string | null = null;
     for (const e of entries) {
+      const rel = prefix ? `${prefix}/${e.name}` : e.name;
       if (e.isDirectory()) {
-        if (!IGNORED_DIRS.has(e.name) && !e.name.startsWith(".")) subdirs++;
+        if (!ignore.ignores(rel, true) && !e.name.startsWith(".")) subdirs++;
         if (!marker && REPO_MARKERS.includes(e.name)) marker = e.name;
       } else if (e.isFile()) {
         if (isSource(e.name)) sourceFiles++;
@@ -716,20 +745,27 @@ const server = Bun.serve({
       const abs = resolve(requested.replace(/^~(?=$|\/)/, process.env.HOME ?? "~"));
       try {
         const entries = await readdir(abs, { withFileTypes: true });
+        // The rules of the directory being browsed, so the picker hides what
+        // opening it would refuse to walk. A directory that is not a git
+        // checkout has no rules and nothing is hidden — which is the honest
+        // answer, since opening it would walk all of it too.
+        const ignore = new Ignore(abs);
         const dirs = entries
           .filter((e) => e.isDirectory())
           .filter((e) => showHidden || !e.name.startsWith("."))
-          .filter((e) => !IGNORED_DIRS.has(e.name))
+          .filter((e) => !ignore.ignores(e.name, true) && !IGNORED_DIRS.has(e.name))
           .map((e) => e.name)
           .sort((a, b) => a.localeCompare(b))
           .slice(0, 500);
 
-        const described = await Promise.all(dirs.map((name) => describeDir(resolve(abs, name), name)));
+        const described = await Promise.all(
+          dirs.map((name) => describeDir(resolve(abs, name), name, ignore, name)),
+        );
         return json({
           path: abs,
           parent: abs === "/" ? null : resolve(abs, ".."),
           home: process.env.HOME ?? "/",
-          self: await describeDir(abs, basename(abs) || abs),
+          self: await describeDir(abs, basename(abs) || abs, ignore, ""),
           dirs: described,
         });
       } catch (err) {

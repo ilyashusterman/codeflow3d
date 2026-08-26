@@ -15,6 +15,7 @@ import { useFrame, useThree } from "@react-three/fiber";
 import { Box3, Euler, Vector3 } from "three";
 import type { SceneGraph } from "@shared/protocol";
 import { useStore } from "../state/store";
+import { arrange } from "./CodePanels";
 
 /** Where the camera looks when there is nothing to fit to yet. */
 const TARGET = new Vector3(-1.25, 1.15, 0.7);
@@ -64,7 +65,29 @@ function fitToScene(scene: SceneGraph | null, aspect: number) {
   const box = new Box3();
   const p = new Vector3();
   for (const node of scene.nodes) box.expandByPoint(p.fromArray(node.pos));
-  for (const panel of scene.panels) box.expandByPoint(p.fromArray(panel.pos));
+
+  // Screens are placed on the client, so `panel.pos` is only where the server
+  // *suggested* they go — in every arrangement but `stagger` they are somewhere
+  // else entirely. Framing the suggestion left the wall of screens hanging off
+  // the top of the view on arrival. Read where they actually are, corners
+  // included: a wall is framed by its edges, not by the centres of its screens.
+  //
+  // Read, not subscribed: the camera re-frames when the repository changes, and
+  // must not lurch every time the size slider moves.
+  const { view, panelPos } = useStore.getState();
+  scene.panels.forEach((panel, index) => {
+    const size: [number, number] = [
+      panel.size[0] * view.screenScale,
+      panel.size[1] * view.screenScale,
+    ];
+    const at =
+      panelPos[panel.file] ??
+      (view.screenLayout === "stagger"
+        ? panel.pos
+        : arrange(index, scene.panels.length, view.screenLayout, size).pos);
+    box.expandByPoint(p.set(at[0] - size[0] / 2, at[1] - size[1] / 2, at[2]));
+    box.expandByPoint(p.set(at[0] + size[0] / 2, at[1] + size[1] / 2, at[2]));
+  });
 
   const target = box.getCenter(new Vector3());
   const size = box.getSize(new Vector3());
@@ -98,7 +121,10 @@ function OrbitMode({ scene }: { scene: SceneGraph | null }) {
   // Re-frame when the repository changes, never on an edit: the camera must
   // not jump while you are reading or typing.
   const root = scene?.root ?? null;
-  const fit = useMemo(() => fitToScene(scene, aspect), [root, aspect]); // eslint-disable-line react-hooks/exhaustive-deps
+  const layout = useStore((s) => s.view.screenLayout);
+  // Re-framed on the arrangement too: switching it moves every screen at once,
+  // which is exactly when the old framing stops being the right one.
+  const fit = useMemo(() => fitToScene(scene, aspect), [root, aspect, layout]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /**
    * The pivot is set imperatively, never as a prop.

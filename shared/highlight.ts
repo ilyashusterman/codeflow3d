@@ -1,10 +1,14 @@
 /**
  * Tiny multi-language tokenizer, shared by the server (which highlights the
  * panel windows it sends) and the client (which highlights the editor overlay
- * as you type). Panels are drawn
- * into canvas textures at a few hundred pixels wide, so per-token fidelity
- * beyond keyword/string/comment/number/call is invisible — this stays
- * dependency-free and fast enough to run on every keystroke-level save.
+ * as you type).
+ *
+ * The classes it emits are the ones a real editor theme distinguishes —
+ * declaration keywords apart from control keywords, identifiers apart from
+ * punctuation — because every surface that shows code here is meant to read as
+ * the same editor. It stays regex-based and dependency-free: this runs on every
+ * keystroke-level save, and a parser per language is what tree-sitter is for
+ * on the graph side.
  */
 import type { TokenClass } from "./protocol";
 
@@ -16,7 +20,7 @@ export interface RawLine {
 
 const KEYWORDS: Record<string, string[]> = {
   common: [
-    "return", "if", "else", "for", "while", "break", "continue", "new", "throw",
+    "return", "if", "else", "for", "while", "do", "break", "continue", "new", "throw",
     "try", "catch", "finally", "switch", "case", "default", "in", "of", "not",
     "and", "or", "true", "false", "null", "nil", "None", "True", "False",
   ],
@@ -25,7 +29,13 @@ const KEYWORDS: Record<string, string[]> = {
     "import", "export", "from", "as", "default", "this", "typeof", "instanceof",
     "yield", "static", "get", "set", "delete", "void", "undefined",
   ],
-  ts: ["interface", "type", "enum", "implements", "public", "private", "protected", "readonly", "declare", "namespace", "keyof", "infer", "satisfies"],
+  ts: [
+    "interface", "type", "enum", "implements", "public", "private", "protected",
+    "readonly", "declare", "namespace", "keyof", "infer", "satisfies",
+    // Primitives are keywords to a theme, not identifiers: an annotated
+    // parameter list is most of what a reader sees at a glance.
+    "number", "string", "boolean", "any", "unknown", "never", "object", "symbol", "bigint",
+  ],
   py: ["def", "lambda", "class", "import", "from", "as", "with", "yield", "pass", "raise", "global", "nonlocal", "async", "await", "elif", "self"],
   go: ["func", "package", "import", "var", "const", "type", "struct", "interface", "go", "defer", "chan", "select", "range", "map", "make", "nil", "err"],
   rust: ["fn", "let", "mut", "pub", "use", "mod", "impl", "trait", "struct", "enum", "match", "where", "unsafe", "crate", "self", "Some", "Ok", "Err"],
@@ -44,10 +54,58 @@ function keywordSet(language: string): Set<string> {
   return new Set(buckets.flat());
 }
 
+/**
+ * Keywords an editor theme colours as control flow rather than as a
+ * declaration. VSCode's default dark theme paints `return`/`if`/`await` and
+ * the module keywords one colour and `const`/`function`/`class` another; a
+ * single "keyword" class flattens the two and is the main reason home-grown
+ * highlighting reads as a toy next to a real editor.
+ */
+const CONTROL = new Set([
+  "return", "if", "else", "elif", "for", "while", "do", "break", "continue",
+  "switch", "case", "match", "try", "catch", "except", "finally", "throw",
+  "raise", "pass", "yield", "await", "new", "delete", "in", "of", "with",
+  "and", "or", "not", "import", "export", "from", "as", "typeof", "instanceof",
+  "defer", "go", "select", "range", "goto", "use", "mod", "package",
+]);
+
+/** Keywords that introduce a name: what follows them is a definition, not a use. */
+const DECLARES_FN = new Set(["function", "def", "fn", "func", "method", "sub"]);
+const DECLARES_TYPE = new Set([
+  "class", "interface", "type", "enum", "struct", "trait", "namespace", "impl", "record",
+]);
+
 const lineCommentToken = (language: string) => (language === "python" ? "#" : "//");
 
 const TOKEN_RE =
   /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\/\/[^\n]*|#[^\n]*)|(\b\d[\w.]*\b)|([A-Za-z_$][\w$]*)|(\s+)|([{}()[\];,.]|[=+\-*/<>!&|?:%^~]+)/g;
+
+/**
+ * Which class one word token belongs to.
+ *
+ * Order matters: a keyword is a keyword wherever it appears, a name right
+ * after `function`/`class` is the definition it introduces, a name followed by
+ * `(` is a call, a capitalized name is a type, and everything left is an
+ * ordinary identifier — which is a colour of its own, not the colour of the
+ * whitespace around it.
+ */
+function classifyWord(
+  word: string,
+  src: string,
+  cursor: number,
+  kw: Set<string>,
+  previousWord: string,
+): TokenClass {
+  if (kw.has(word)) return CONTROL.has(word) ? "control" : "keyword";
+  if (DECLARES_FN.has(previousWord)) return "fn";
+  if (DECLARES_TYPE.has(previousWord)) return "type";
+  const rest = src.slice(cursor);
+  // A call, including a generic one: `api<T = any>(`. Matching a bare `<`
+  // would paint the left side of every comparison as a function.
+  if (rest.startsWith("(") || /^<[^<>]*>\s*\(/.test(rest)) return "fn";
+  if (/^[A-Z]/.test(word)) return "type";
+  return "ident";
+}
 
 /**
  * Tokenize one line into coloured spans.
@@ -55,6 +113,8 @@ const TOKEN_RE =
  */
 function tokenizeLine(text: string, kw: Set<string>, language: string, state: { block: boolean }): RawLine["spans"] {
   const spans: RawLine["spans"] = [];
+  /** The last word token on this line — what makes `function foo` a definition. */
+  let previousWord = "";
   const push = (t: string, c: TokenClass) => {
     if (!t) return;
     const last = spans[spans.length - 1];
@@ -103,9 +163,8 @@ function tokenizeLine(text: string, kw: Set<string>, language: string, state: { 
       push(comment, "plain");
     } else if (num) push(num, "number");
     else if (word) {
-      const isCall = src[cursor] === "(";
-      const isType = /^[A-Z]/.test(word);
-      push(word, kw.has(word) ? "keyword" : isCall ? "fn" : isType ? "type" : "plain");
+      push(word, classifyWord(word, src, cursor, kw, previousWord));
+      previousWord = word;
     } else if (ws) push(ws, "plain");
     else if (op) push(op, /^[{}()[\];,.]$/.test(op) ? "punct" : "op");
   }

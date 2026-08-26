@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { CodeLine, SceneGraph, TokenClass } from "@shared/protocol";
 import { highlight } from "@shared/highlight";
+import { METRICS } from "../lib/editorTheme";
 import { apiUrl } from "../net/api";
 import { useStore } from "../state/store";
 
@@ -70,6 +71,7 @@ export function FlatView() {
   const areaRef = useRef<HTMLTextAreaElement>(null);
   const mirrorRef = useRef<HTMLPreElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
+  const focusRef = useRef<HTMLDivElement>(null);
 
   const editing = draft !== null;
   const dirty = editing && draft !== loaded?.source;
@@ -182,6 +184,15 @@ export function FlatView() {
     return set;
   }, [panel]);
 
+  // Open where the screen was looking. An editor opening a file at the top
+  // when you asked for line 300 is the one thing that makes a jump from the
+  // scene feel like a different application.
+  useEffect(() => {
+    if (!loaded || editing) return;
+    const at = focusRef.current;
+    if (at) at.scrollIntoView({ block: "center" });
+  }, [loaded, editing, file]);
+
   const syncScroll = () => {
     const from = areaRef.current;
     if (!from) return;
@@ -251,10 +262,16 @@ export function FlatView() {
           <div className="flat-read">
             {lines.map((line) => {
               const flow = roles.get(line.n);
+              // View mode has no caret, but the line the screen was following
+              // is still the line an editor would have parked the cursor on.
+              const focus = !editing && line.n === panel?.focusLine;
               return (
                 <div
                   key={line.n}
-                  className={`scr-line${changed.has(line.n) ? " ch-add" : ""}${flow ? ` fl-${flow}` : ""}`}
+                  ref={focus ? focusRef : undefined}
+                  className={`scr-line${changed.has(line.n) ? " ch-add" : ""}${
+                    flow ? ` fl-${flow}` : ""
+                  }${focus ? " is-focus" : ""}`}
                 >
                   <span className="scr-gutter">{line.n}</span>
                   <span className="scr-flow" />
@@ -328,7 +345,11 @@ export function FlatView() {
         <span>
           <b>esc</b> back to 3D · <b>⌘S</b> save · flow rails show what the traced call graph runs through
         </span>
-        {dirty && <span className="scr-dirty">unsaved changes</span>}
+        <span className="flat-status">
+          {dirty && <b className="scr-dirty">unsaved changes</b>}
+          {panel ? `Ln ${panel.focusLine}` : ""}
+          {`  Spaces: ${METRICS.tabSize}  ${loaded?.language ?? ""}`}
+        </span>
       </footer>
     </div>
   );

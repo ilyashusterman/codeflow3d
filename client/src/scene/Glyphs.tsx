@@ -10,6 +10,7 @@ import type { SceneGraph } from "@shared/protocol";
 import { mapScalarLinear } from "../lib/colormap";
 import { makeTexture } from "../lib/canvasTex";
 import { mergeSpheres } from "../lib/mergeSpheres";
+import { MOTION } from "../lib/motion";
 import { useDisposed } from "../lib/useDisposable";
 
 const HOT = new Color("#ffd58a");
@@ -29,6 +30,17 @@ function haloTexture() {
 export function Glyphs({ scene }: { scene: SceneGraph }) {
   const halo = useDisposed(haloTexture, []);
   const pointsRef = useRef<Points>(null);
+  const uniforms = useRef({ uTime: { value: 0 }, uScale: { value: 420 }, uBirth: { value: MOTION.birth } });
+
+  /**
+   * When each definition was first seen, on the same clock the shader runs on.
+   *
+   * The halo geometry is rebuilt from scratch on every scene message, so "is
+   * this node new?" cannot be answered from the geometry — it has to be
+   * remembered across rebuilds. Everything present at boot shares a birthday,
+   * which is why the graph lights up as it arrives rather than snapping on.
+   */
+  const born = useRef(new Map<string, number>());
 
   /**
    * Only nodes a streamline actually visits get a glyph. On a large repo the
@@ -68,8 +80,20 @@ export function Glyphs({ scene }: { scene: SceneGraph }) {
     const position = new Float32Array(visible.length * 3);
     const size = new Float32Array(visible.length);
     const color = new Float32Array(visible.length * 3);
+    const birth = new Float32Array(visible.length);
+    const seen = born.current;
+    // A graph that churns through renames for hours should not grow a map of
+    // every name it ever had.
+    if (seen.size > 20_000) seen.clear();
+    const clock = uniforms.current.uTime.value;
     const c = new Color();
     visible.forEach((node, i) => {
+      let at = seen.get(node.id);
+      if (at === undefined) {
+        at = clock;
+        seen.set(node.id, at);
+      }
+      birth[i] = at;
       position.set(node.pos, i * 3);
       size[i] =
         (0.16 + Math.min(0.3, node.fanOut * 0.038)) * (0.45 + 0.55 * density) + node.heat * 0.5;
@@ -83,11 +107,11 @@ export function Glyphs({ scene }: { scene: SceneGraph }) {
     geo.setAttribute("position", new BufferAttribute(position, 3));
     geo.setAttribute("aSize", new BufferAttribute(size, 1));
     geo.setAttribute("color", new BufferAttribute(color, 3));
+    geo.setAttribute("aBorn", new BufferAttribute(birth, 1));
     geo.computeBoundingSphere();
     return geo;
   }, [visible, scene.domain, density]);
 
-  const uniforms = useRef({ uTime: { value: 0 }, uScale: { value: 420 } });
   useFrame((state, dt) => {
     uniforms.current.uTime.value += dt;
     uniforms.current.uScale.value = state.size.height * 0.9;
@@ -120,14 +144,22 @@ export function Glyphs({ scene }: { scene: SceneGraph }) {
           uniforms={{ uMap: { value: halo }, uGain: { value: 0.45 + 0.55 * density }, ...uniforms.current }}
           vertexShader={`
             attribute float aSize;
+            attribute float aBorn;
             varying vec3 vColor;
             uniform float uScale;
             uniform float uTime;
+            uniform float uBirth;
             void main() {
-              vColor = color;
+              // A definition that has just appeared flares and settles: bright
+              // and small, growing into its steady size. This is the only cue
+              // in the scene that says "this function did not exist a moment
+              // ago", so it is worth a second of everyone's attention.
+              float age = clamp((uTime - aBorn) / uBirth, 0.0, 1.0);
+              float pop = 1.0 - pow(1.0 - age, 3.0);
+              vColor = color * (1.0 + 2.2 * (1.0 - pop));
               vec4 mv = modelViewMatrix * vec4(position, 1.0);
               float breathe = 0.92 + 0.08 * sin(uTime * 2.2 + position.x * 3.0);
-              gl_PointSize = aSize * breathe * uScale / max(0.001, -mv.z);
+              gl_PointSize = aSize * breathe * (0.3 + 0.7 * pop) * uScale / max(0.001, -mv.z);
               gl_Position = projectionMatrix * mv;
             }`}
           fragmentShader={`

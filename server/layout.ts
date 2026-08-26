@@ -43,9 +43,18 @@ export interface LayoutConfig {
   samples: number;
   /** Code panels on screen at once. */
   maxPanels: number;
-  /** Source lines a screen displays at once. */
+  /**
+   * Nominal rows a screen displays. A hint only: the viewer sizes a line box
+   * from the editor metrics and its own screen scale, so how many rows fit is
+   * something only the client knows. It is here so the buffer below can be
+   * sized around a sensible window even for a client that never reports back.
+   */
   panelLines: number;
-  /** Lines kept in the scroll buffer around the action. */
+  /**
+   * Lines kept in the scroll buffer around the action. Has to comfortably
+   * exceed the rows any screen can show, or a screen fills its viewport and has
+   * nothing left to scroll through while it follows an edit.
+   */
   panelBuffer: number;
   /** 0 = raw graph edges, 1 = fully bundled through module trunks. */
   bundle: number;
@@ -62,8 +71,8 @@ export const DEFAULT_LAYOUT: LayoutConfig = {
   maxPaths: 56,
   samples: 44,
   maxPanels: 5,
-  panelLines: 12,
-  panelBuffer: 44,
+  panelLines: 40,
+  panelBuffer: 128,
   bundle: 0.38,
   heatHalfLife: 9_000,
   xStart: -10.5,
@@ -130,7 +139,11 @@ interface Placed {
 function fileHeat(file: FileEntry | undefined, now: number, halfLife: number, def?: Definition): number {
   // A buffer being typed into is as hot as it gets, saved or not.
   if (file?.unsaved) return 1;
-  if (!file || file.revisions <= 1) return 0;
+  if (!file) return 0;
+  // `changedAt` is disk mtime until something changes the file, so a save made
+  // just before we started counts — and with a 9s half-life anything older
+  // than about a minute is already cold, which is what keeps a fresh clone
+  // (every mtime identical) from lighting up the whole tree for long.
   const age = now - file.changedAt;
   if (age > halfLife * 6) return 0;
   let h = Math.pow(0.5, age / halfLife);
@@ -561,9 +574,10 @@ function computeLineRoles(
 
 /**
  * The panels are a change log, not a sample of the repo: the N most recently
- * *changed* files, newest first, each opened on the hunk that changed. Before
- * anything has been edited they fall back to the graph's entry points, so the
- * first frame still shows the code the flow starts from.
+ * *written* files, newest first, each opened on the hunk that changed. On a
+ * repo nothing has touched yet that ordering is disk mtime, so the first frame
+ * opens on the files you were last editing; the entry-point fallback below is
+ * only reached when there are fewer files than slots.
  */
 function buildPanels(
   analysis: AnalysisResult,
@@ -645,7 +659,7 @@ function buildPanels(
       added: diff.added,
       removed: diff.removed,
       revisions: entry.revisions,
-      changedAt: live?.at ?? (entry.revisions > 1 ? entry.changedAt : null),
+      changedAt: live?.at ?? entry.changedAt,
       unsaved: Boolean(live),
       textOnly: entry.facts === null,
       firstLine: from,
@@ -727,7 +741,7 @@ function buildTree(analysis: AnalysisResult, now: number, cfg: LayoutConfig): Tr
         next = { name: part, children: new Map(), isDir: !isLast, path, changedAt: 0 };
         cur.children.set(part, next);
       }
-      if (entry.revisions > 1) next.changedAt = Math.max(next.changedAt, entry.changedAt);
+      next.changedAt = Math.max(next.changedAt, entry.changedAt);
       cur = next;
     });
   }

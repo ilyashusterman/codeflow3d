@@ -70,6 +70,11 @@ function EventRow({ event, now }: { event: FileEvent; now: number }) {
           </span>
         )}
         {event.unsaved && <span className="ev-unsaved">unsaved</span>}
+        {event.seeded && (
+          <span className="ev-seeded" title="last written before this session started">
+            on disk
+          </span>
+        )}
         {event.fromEditor && <span className="ev-self">here</span>}
         <span className="ev-age">{ago(event.at, now)}</span>
         {hasHunk && (

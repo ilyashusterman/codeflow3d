@@ -2,41 +2,49 @@
  * What not to walk, watch, or parse.
  *
  * The motivating case: a repository with a Python virtualenv in it, under a name
- * the fixed list below would never have guessed. `.gitignore` listed it as a
- * `.venv*` directory, git never showed it, and it had been forgotten — but it
- * held 15,988 installed `.py` files. Walking it turned a 270-file project into a
+ * no fixed list would ever have guessed. `.gitignore` listed it as a `.venv*`
+ * directory, git never showed it, and it had been forgotten — but it held
+ * 15,988 installed `.py` files. Walking it turned a 270-file project into a
  * 9,581-file one: 22 seconds of parsing to build a graph of library code.
  *
- * So the rule is the one the repository already states: if git ignores it, we
- * ignore it. On top of that sit two safety nets, because not every checkout is
- * a git repository and not every vendored tree is listed:
+ * So there is one rule, the one the repository already states: if git ignores
+ * it, we ignore it. Patterns are matched with gitignore semantics, scoped to
+ * the directory of the `.gitignore` that declared them, including negation
+ * with `!`, and re-read when one is edited.
  *
- *   - a fixed list of directory names that are never source (node_modules, …)
- *   - markers that identify a tree as installed rather than written: a
- *     `pyvenv.cfg` beside it, or a `site-packages` segment in the path
+ * There used to be a list of forty directory names here as well — node_modules,
+ * dist, .venv, Pods, .turbo — and it was the wrong shape for the job. A guessed
+ * name is wrong in both directions: it hid a `dist/` someone actually commits
+ * and it still missed the vendored tree with an unguessable name, which is the
+ * case that motivated the file. Every project that has such a directory already
+ * says so in its `.gitignore`, so asking the repository is both shorter and
+ * more accurate than guessing on its behalf.
  *
- * Patterns are matched with gitignore semantics, scoped to the directory of the
- * `.gitignore` that declared them, including negation with `!`.
+ * Two things are still decided without asking, because `.gitignore` cannot
+ * answer them:
+ *
+ *   - `.git` itself, which git never tracks and so never lists
+ *   - a `pyvenv.cfg` beside a directory, which identifies it as installed
+ *     rather than authored whatever it is called — evidence on disk, not a
+ *     guess about a name
+ *
+ * The cost of dropping the list is honest and worth stating: a tree with no
+ * `.gitignore` at all (not a git checkout, or a git checkout that never wrote
+ * one) now gets walked in full, `node_modules` included. The walk says what it
+ * skipped, so that shows up as a large file count rather than silently.
  */
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
-/** Directory names that are never worth walking or watching. */
-export const IGNORED_DIRS = new Set([
-  "node_modules", ".git", ".hg", ".svn", "dist", "build", "out", ".next",
-  ".nuxt", ".turbo", ".cache", "coverage", "target", "vendor", "__pycache__",
-  ".venv", "venv", ".mypy_cache", ".pytest_cache", ".idea", ".vscode-test",
-  ".gradle", "Pods", "DerivedData", ".terraform", ".svelte-kit", ".parcel-cache",
-  // Installed packages, whatever the surrounding directory is called. A venv
-  // named `.venv-whatever` is not in this list, but its site-packages is.
-  "site-packages", "dist-packages",
-  // Tool-managed trees that hold copies of other people's code.
-  ".tox", ".nox", ".direnv", ".yarn", ".pnpm-store", "bower_components",
-  ".serverless", ".output", ".astro", ".docusaurus", ".expo", ".dart_tool",
-  ".bundle", ".stack-work", ".cargo", ".conda", "Carthage",
-  // codeflow3d's own artifacts, so pointing it at itself stays quiet.
-  "exports", "wasm",
-]);
+/**
+ * Directory names ignored without consulting the repository.
+ *
+ * One entry, and it is not a heuristic: git's own metadata directory is never
+ * source, and it never appears in a `.gitignore` because git does not track
+ * itself. Anything else that belongs here belongs in the repository's
+ * `.gitignore`, where git and this walk can read the same answer.
+ */
+export const IGNORED_DIRS = new Set([".git"]);
 
 /** Noise that would otherwise flood the activity feed. */
 const IGNORED_FILE_RE = /(^|\/)(\.DS_Store|.*\.swp|.*~|\.#.*|[0-9]+\.tmp)$/;
@@ -134,6 +142,17 @@ function compile(line: string, base: string): Rule | null {
   };
 }
 
+/**
+ * True for a path whose *contents* are the ignore rules.
+ *
+ * The watcher uses this to know that an event changes the answers rather than
+ * just the tree: editing a `.gitignore` while we watch has to take effect, or
+ * the rule you just wrote applies to the next session and not to this one.
+ */
+export function isIgnoreFile(rel: string): boolean {
+  return rel === ".gitignore" || rel.endsWith("/.gitignore");
+}
+
 /** Reads `.gitignore` in one directory, if there is one. */
 function rulesFrom(root: string, relDir: string): Rule[] {
   const file = join(root, relDir, ".gitignore");
@@ -167,9 +186,14 @@ export class Ignore {
   private vendored = new Set<string>();
 
   constructor(readonly root: string) {
+    this.loadRoot();
+  }
+
+  /** The root `.gitignore` and its out-of-tree sibling. */
+  private loadRoot(): void {
     this.loadDir("");
     // `.git/info/exclude` is the same mechanism, kept out of the working tree.
-    const exclude = join(root, ".git/info/exclude");
+    const exclude = join(this.root, ".git/info/exclude");
     if (existsSync(exclude)) {
       try {
         for (const line of readFileSync(exclude, "utf8").split("\n")) {
@@ -180,6 +204,27 @@ export class Ignore {
         /* unreadable: the fixed list still applies */
       }
     }
+  }
+
+  /**
+   * Re-read every `.gitignore` seen so far.
+   *
+   * Rules are cached, which is what makes the walk cheap — and what made a
+   * `.gitignore` edited mid-session do nothing at all: the line you added was
+   * obeyed by the next scan and by no event before it. Rebuilding the whole set
+   * rather than patching the one file that changed is the cheap correct move: a
+   * `.gitignore` is a few hundred bytes, edits are rare, and a partial rebuild
+   * would have to preserve rule *order* across files to keep `!` working.
+   */
+  reload(): void {
+    const seen = [...this.loaded];
+    this.rules = [];
+    this.loaded.clear();
+    // A tree identified as vendored may have been so only by a rule that is now
+    // gone; a `pyvenv.cfg` beside it will identify it again if it still is.
+    this.vendored.clear();
+    this.loadRoot();
+    for (const key of seen) this.loadDir(key === "." ? "" : key);
   }
 
   /** Pick up the `.gitignore` in one directory. Idempotent. */
@@ -223,9 +268,20 @@ export class Ignore {
       walked = walked ? `${walked}/${segments[i]}` : segments[i];
       this.loadDir(walked);
       if (this.vendored.has(walked)) return true;
+      // An excluded directory settles it, the way git settles it: "it is not
+      // possible to re-include a file if a parent directory of that file is
+      // excluded". Without this, a `!` line in a nested `.gitignore` could
+      // resurrect a file from inside a tree the root had already excluded —
+      // `.run/` here was ignored, and `!keep.min.js` in the fixture below it
+      // brought one file back out.
+      if (this.decide(walked, true)) return true;
     }
 
-    // Last matching rule wins, so a later `!` can rescue an earlier match.
+    return this.decide(rel, isDir);
+  }
+
+  /** Last matching rule wins, so a later `!` can rescue an earlier match. */
+  private decide(rel: string, isDir?: boolean): boolean {
     let ignored = false;
     for (const rule of this.rules) {
       // Anything below a matched directory is covered whatever the leaf is; the

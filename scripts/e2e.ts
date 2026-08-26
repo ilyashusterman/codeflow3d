@@ -15,6 +15,9 @@
 import { spawn } from "node:child_process";
 import { mkdir, rm, writeFile, readFile, appendFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { TOKEN_CLASSES } from "../shared/protocol";
+import { METRICS, PX_PER_UNIT, TOKEN_COLORS, editorMetrics } from "../client/src/lib/editorTheme";
+import { MOTION, freshLines } from "../client/src/lib/motion";
 
 const ROOT = resolve(new URL(".", import.meta.url).pathname, "..");
 const UI_PORT = process.env.PORT ?? "5288";
@@ -100,14 +103,13 @@ async function writeFixture() {
   // ---- the trees that must stay out of the graph
   //
   // Modelled on the repository that made this necessary: a virtualenv named
-  // something the fixed ignore list would never guess, listed in .gitignore,
-  // holding thousands of installed files. Each of these is ignored for a
-  // different reason, so a regression in any one of the three shows up here.
+  // something no fixed ignore list would ever guess, listed in .gitignore,
+  // holding thousands of installed files.
   await writeFile(
     resolve(FIXTURE, ".gitignore"),
     // A directory pattern with a wildcard — the shape that was silently
     // ignoring nothing, because the trailing slash made the rule skip files.
-    ".venv*/\ngenerated/\n*.min.js\n!keep.min.js\n",
+    ".venv*/\ngenerated/\nnode_modules/\n*.min.js\n!keep.min.js\n",
   );
 
   // 1. gitignored, and a virtualenv by marker: two independent reasons.
@@ -122,9 +124,17 @@ async function writeFixture() {
   await mkdir(resolve(FIXTURE, "generated"), { recursive: true });
   await writeFile(resolve(FIXTURE, "generated/schema.ts"), "export const generated = 1;\n");
 
-  // 3. on the fixed list, whatever .gitignore says.
+  // 3. gitignored the way every real project ignores it. There is no fixed list
+  // of names any more, so this is skipped for the same reason `generated/` is:
+  // the repository said so.
   await mkdir(resolve(FIXTURE, "node_modules/dep"), { recursive: true });
   await writeFile(resolve(FIXTURE, "node_modules/dep/index.js"), "module.exports = 1;\n");
+
+  // 4. the other direction, which the fixed list used to get wrong: a name that
+  // was on it (`dist`) but that this repository does *not* ignore. Committed
+  // build output is somebody's actual source, and it has to be walked.
+  await mkdir(resolve(FIXTURE, "dist"), { recursive: true });
+  await writeFile(resolve(FIXTURE, "dist/committed.ts"), "export const shipped = 1;\n");
 
   // A negation, because `!` is the rule most likely to be dropped in a rewrite.
   await writeFile(resolve(FIXTURE, "bundle.min.js"), "var a=1;\n");
@@ -160,6 +170,88 @@ function teardown() {
       child.kill("SIGTERM");
     } catch {}
   }
+}
+
+// ------------------------------------------------------------- the editor
+
+/** The stylesheet, read once: flat mode's half of the shared theme. */
+async function stylesheet() {
+  return await readFile(resolve(ROOT, "client/src/styles.css"), "utf8");
+}
+
+/**
+ * Every code surface renders the same editor.
+ *
+ * Three separate things are asserted, in the order they can break:
+ * the palette covers the wire format, the DOM surfaces read that palette
+ * instead of a private copy of it, and the geometry a screen resolves from its
+ * own size is an editor's geometry with a buffer big enough to fill it.
+ */
+async function checkEditor(scene: any) {
+  // ---- the palette covers every class the wire can carry
+  const uncoloured = TOKEN_CLASSES.filter((c) => !/^(#|rgba?\()/.test(TOKEN_COLORS[c] ?? ""));
+  check("every token class has a colour", uncoloured.length === 0,
+    uncoloured.length ? `no colour for ${uncoloured.join(", ")}` : `${TOKEN_CLASSES.length} classes`);
+
+  // ---- flat mode reads that palette rather than its own hexes
+  const css = await stylesheet();
+  const unstyled = TOKEN_CLASSES.filter(
+    (c) => !new RegExp(`\\.tk-${c}\\s*\\{[^}]*var\\(--tk-${c}\\)`).test(css),
+  );
+  check("flat mode colours every class from the shared theme", unstyled.length === 0,
+    unstyled.length ? `.tk-${unstyled.join(", .tk-")} not wired to a variable` : "no private palette");
+  const strayHex = [...css.matchAll(/\.tk-[a-z]+\s*\{[^}]*#[0-9a-f]{3,8}/gi)].map((m) => m[0]);
+  check("no surface keeps a second copy of the palette", strayHex.length === 0,
+    strayHex.length ? strayHex[0] : "one source of truth");
+
+  // ---- the highlighter emits what a real theme distinguishes
+  const classes = new Set<string>();
+  for (const panel of scene.panels ?? []) {
+    for (const line of panel.lines ?? []) for (const span of line.spans ?? []) classes.add(span.c);
+  }
+  for (const wanted of ["keyword", "control", "ident", "fn", "string"]) {
+    check(`highlighting distinguishes \`${wanted}\``, classes.has(wanted), [...classes].sort().join(" "));
+  }
+
+  // ---- the geometry is an editor's, on every screen and at every screen size
+  const sizes: [number, number][] = (scene.panels ?? []).map((p: any) => p.size);
+  const scales = [0.5, 1, 2.5]; // the viewer's screen-size slider, end to end
+  let worst: { rows: number; ratio: number; detail: string } | null = null;
+  let ok = true;
+  for (const size of sizes) {
+    for (const scale of scales) {
+      const w = Math.round(size[0] * scale * PX_PER_UNIT);
+      const h = Math.round(size[1] * scale * PX_PER_UNIT);
+      const m = editorMetrics(w, h, PX_PER_UNIT);
+      const ratio = m.lineH / m.font;
+      const detail = `${size[0]}×${size[1]} @${scale}× → ${m.rows} rows, ${m.font}px/${m.lineH}px`;
+      // A line box between 1.3 and 1.6 ems is the range every editor ships in;
+      // VSCode's own default is 19px on 14px text.
+      if (ratio < 1.3 || ratio > 1.6) { ok = false; fail("line box is editor-sized", detail); }
+      // Whole rows only: a leftover taller than a line means the rows were
+      // stretched to fill the viewport instead of the viewport being filled
+      // with rows.
+      if (m.codeH - m.rows * m.lineH >= m.lineH) { ok = false; fail("rows fill the viewport", detail); }
+      if (!worst || m.rows > worst.rows) worst = { rows: m.rows, ratio, detail };
+    }
+  }
+  if (ok && worst) {
+    ok = true;
+    check("every screen lays out like an editor", true,
+      `${sizes.length} screens × ${scales.length} sizes · densest ${worst.detail}`);
+  }
+
+  // ---- and the buffer the server sends can fill the screen that shows it
+  const short = (scene.panels ?? []).filter((p: any) => {
+    const w = Math.round(p.size[0] * PX_PER_UNIT);
+    const h = Math.round(p.size[1] * PX_PER_UNIT);
+    const rows = editorMetrics(w, h, PX_PER_UNIT).rows;
+    return p.lines.length < Math.min(rows, p.totalLines);
+  });
+  check("the buffer covers a full screen of every file", short.length === 0,
+    short.length
+      ? `${short[0].file}: ${short[0].lines.length} of ${short[0].totalLines} lines`
+      : `${METRICS.tabSize}-space tabs, ${scene.panels?.length ?? 0} screens filled`);
 }
 
 // ------------------------------------------------------------------ the test
@@ -244,6 +336,13 @@ async function main() {
   check("the pattern it negates still applies", !(await tracked("bundle.min.js")),
     "bundle.min.js is not tracked");
   check("a file inside an ignored tree is never read", !(await tracked(".venv-local/pyvenv.cfg")));
+  // The contract is `.gitignore` and nothing else: a directory git ignores is
+  // skipped whatever it is called, and one git tracks is walked whatever it is
+  // called. These two are the same assertion from both sides.
+  check("a gitignored dependency tree is skipped", !(await tracked("node_modules/dep/index.js")),
+    "node_modules/dep/index.js is not tracked");
+  check("a committed `dist/` is walked, not guessed away", await tracked("dist/committed.ts"),
+    "dist/committed.ts is tracked");
 
   // The graph is small, so every stage should be immediate. Before the fixes a
   // tree this shape took over two minutes; a bound this loose still catches it.
@@ -253,6 +352,17 @@ async function main() {
   check("scene has call edges", scene.edges?.length > 0, `edges=${scene.edges?.length}`);
   check("scene has code panels", scene.panels?.length > 0, `panels=${scene.panels?.length}`);
   check("scene has a layout domain", Array.isArray(scene.domain) && scene.domain.length === 2, JSON.stringify(scene.domain));
+
+  // ---- one editor, on every screen
+  //
+  // A screen, flat mode's reader and flat mode's editor are meant to be the
+  // same editor: one palette, one line box, VSCode's metrics. Half of that
+  // contract is on the wire (the server sends a buffer of highlighted lines)
+  // and half is in the client (it decides how many rows of that buffer fit), so
+  // neither side can check it alone. What this catches is the regression that
+  // made it necessary: a screen that sized its line box as `area / rows` drew
+  // 19px text on 100px lines and stopped looking like an editor at all.
+  await checkEditor(scene);
 
   // The point of the project: edges resolved through real imports, not names.
   const byConf: Record<string, number> = scene.stats?.byConfidence ?? {};
@@ -314,6 +424,41 @@ async function main() {
     check("the added function appears by name", gamma, gamma ? "gamma" : "gamma not found in nodes");
     const events = await api<any[]>("/api/events");
     check("the change is reported as an event", events.length > 0, `events=${events.length}`);
+
+    // ---- what the screens will animate
+    //
+    // New content arrives as movement rather than as a cut, and which lines
+    // move is decided by diffing the message against the one the screen was
+    // already showing. That decision is the part that can be wrong in a way you
+    // would only notice as a flicker — a screen re-flashing lines that did not
+    // change, or missing the ones that did — so it is checked here against two
+    // consecutive real scene messages rather than by watching the viewer.
+    const panelFor = (graph: any, file: string) => graph.panels?.find((p: any) => p.file === file);
+    const before = panelFor(scene, "main.ts");
+    const now = panelFor(after, "main.ts");
+    if (before && now) {
+      const fresh = freshLines(before, now);
+      const appended = now.lines.filter((l: any) => l.change === "add").map((l: any) => l.n);
+      const missed = appended.filter((n: number) => !fresh.has(n));
+      check("the reveal covers every line the write added", missed.length === 0,
+        `${fresh.size} lines to reveal of ${now.lines.length}: ${[...fresh].join(",")}`);
+      check("the reveal is the change, not the whole screen", fresh.size < now.lines.length,
+        `${fresh.size} of ${now.lines.length} lines`);
+      check("a screen has nothing to reveal on arrival", freshLines(null, now).size === 0);
+    }
+    // A file nobody touched must not animate: a screen that re-flashes on every
+    // message is worse than one that never moves.
+    const quiet = (after.panels ?? []).find((p: any) => {
+      const was = panelFor(scene, p.file);
+      return was && p.lines.length && !p.lines.some((l: any) => l.change);
+    });
+    if (quiet) {
+      check("an untouched screen stays still", freshLines(panelFor(scene, quiet.file), quiet).size === 0,
+        quiet.file);
+    }
+    check("transitions are long enough to read and short enough to ignore",
+      MOTION.enter > 0.2 && MOTION.enter < 2 && MOTION.reveal > 0.2 && MOTION.reveal < 2 && MOTION.leave > 0.1,
+      `enter ${MOTION.enter}s · reveal ${MOTION.reveal}s · leave ${MOTION.leave}s · birth ${MOTION.birth}s`);
   }
 
   // ---- server-side hot reload: `bun --watch` restarts the API on server edits
@@ -360,6 +505,22 @@ async function main() {
     return s.watching === ROOT && s.stats && s.stats.files > 10 ? s.stats : null;
   }, 120_000);
   if (onSelf) ok("traces this repo's own source", `files=${onSelf.files} nodes=${onSelf.nodes}`);
+
+  // The fixture's files are five lines long, so the buffer check above is
+  // trivially satisfied there. This repo's own source is what proves a screen
+  // of a real file arrives full.
+  const own = await api<any>("/api/scene");
+  await checkEditor(own);
+  const long = (own.panels ?? []).find((p: any) => p.totalLines > 120);
+  if (long) {
+    const m = editorMetrics(
+      Math.round(long.size[0] * PX_PER_UNIT),
+      Math.round(long.size[1] * PX_PER_UNIT),
+      PX_PER_UNIT,
+    );
+    check("a long file arrives with room to scroll", long.lines.length > m.rows,
+      `${long.file}: ${long.lines.length} lines buffered for ${m.rows} rows of ${long.totalLines}`);
+  }
 
   // ---- browse, the folder picker behind "choose folder…"
   const browse = await api<any>(`/api/browse?path=${encodeURIComponent(ROOT)}`);

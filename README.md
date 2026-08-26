@@ -4,26 +4,46 @@ A live 3D map of a local repository, and a place to work inside it.
 
 Point it at a directory. Every file is parsed with tree-sitter, the call graph is
 resolved from the imports actually in scope, and the result is laid out in 3D.
-Every write, add and delete in that tree re-parses the affected file and
-re-renders — an incremental save costs a couple of milliseconds, so an agent
+Then it stays live: every write, add and delete re-parses just that file and
+reaches the screen in about 8ms — so an agent, a colleague or a `git checkout`
 editing files reads as heat moving through the graph while it happens.
 
-Fly around it. Drag the screens where you want them. Double-click one to fly in
-until it fills the frame; open a file flat from the **changes** drawer to read
-it, edit it and save it — the write goes to disk, the watcher sees it, and the
-graph updates the same way it would for an edit made anywhere else.
+![A live trace of codeflow3d's own source: an edit lands on a screen, a screen fills the frame, the same file opens flat, and a new file gets a screen of its own](docs/live-trace.gif)
 
-![codeflow3d tracing its own source, live](docs/live-graph.png)
+*Recorded in one take, tracing its own source. A write from outside lands and the
+screen paints the changed line in; a double-click flies the camera in until one
+screen fills the frame; the same file opens flat for reading; and then a file
+that did not exist a second earlier gets a screen of its own. The edits were made
+for real while the recording ran — nothing in that clip is a mock-up.*
 
-*Tracing its own source. The amber-outlined screens were saved seconds before
-the frame; the green bands are the lines that changed, and the streamlines are
-real call paths, warm where the code is fresh.*
+## Start here
 
 ```bash
-bun install
-bun run dev                      # traces this repo's own source
+bun install                       # or: make install
+bun run dev                       # traces this repo's own source
 bun run dev /path/to/your/repo    # or point it anywhere
 ```
+
+Viewer at <http://localhost:5188>, API at <http://localhost:5189>.
+
+**Your first minute**, in the order that shows you what this is:
+
+1. Open the viewer. The wall of screens is the files that changed most recently,
+   newest first, each rendered as the editor it stands in for.
+2. Edit one of those files in your own editor and save. The screen scrolls to the
+   edit, the changed lines flash and type themselves in, the file's definitions
+   warm up, and the change log picks up a row with the diff in it.
+3. **Double-click** a screen to fly in until it fills the frame — that is a code
+   window at reading distance, in 3D. **Escape** flies back.
+4. **C** opens the change log; click any row to open that file flat, full screen,
+   in the same editor. **Tab** opens the controls, **WASD/QE** move, **F**
+   switches orbit and fly.
+5. Point it at your own repository: the **repo** drawer takes a path, or
+   **choose folder…** opens a picker.
+
+Everything else below is detail you can come back for: how the edges are
+resolved, what each axis means, how a save gets to the screen in 8ms, and how to
+export the scene as a `.glb`.
 
 Or through the Makefile, which also handles the background case and cleanup:
 
@@ -37,11 +57,10 @@ make kill                         # stop everything this project starts
 make test                         # end to end, on its own ports
 ```
 
-Viewer at <http://localhost:5188>, API at <http://localhost:5189>. Switching
-repositories at runtime is live — open the **repo** drawer and type a path, or
-use **choose folder…** for a picker with breadcrumbs, keyboard navigation,
-recents, and per-row hints showing each directory's repo marker and analyzable
-file count.
+Switching repositories at runtime is live — open the **repo** drawer and type a
+path, or use **choose folder…** for a picker with breadcrumbs, keyboard
+navigation, recents, and per-row hints showing each directory's repo marker and
+analyzable file count.
 
 ## The connections are real
 
@@ -64,11 +83,62 @@ of the map is fact and how much is inference. On this repository it is
 about 90% resolved. Calls into third-party packages resolve to nothing and are
 counted as external rather than invented.
 
-![The repo drawer, with a confidence bar per resolution tier](docs/repo-drawer.png)
-
 Languages: **TypeScript, TSX, JavaScript, JSX, Python, Rust, Go**. JSX element
 usage counts as an edge, so a React component tree is part of the graph.
  
+## Every screen is the editor
+
+A screen is not a thumbnail of a file. It is a code window, drawn into a canvas
+texture at 640 pixels per world unit and laid out the way VS Code lays out its
+own editor — because that is the editor these screens stand in for, and a viewer
+you have to squint at is a viewer you stop reading.
+
+Concretely, everywhere code appears — the screens in the scene, flat mode's
+reader, flat mode's editor mirror:
+
+- **One line box, one em size.** A line is a fixed multiple of the font size
+  (1.4, as VS Code ships), so a bigger screen shows *more lines* rather than the
+  same dozen lines stretched to fill it. A default screen holds ~43 rows; the
+  size slider goes to 113. Text is the same physical size on every screen, the
+  way it is on every monitor on a desk.
+- **One palette.** VS Code's default dark theme, and the tokenizer draws the
+  distinctions a real theme needs: `const`/`function` apart from
+  `return`/`await`/`import`, a declared name apart from a call, an identifier
+  apart from the whitespace around it. The colours live in
+  `client/src/lib/editorTheme.ts` and are published as CSS variables, so the DOM
+  surfaces and the canvas cannot drift apart.
+- **The chrome that tells you where you are.** Tab strip with the dirty dot and
+  the diff counts, right-aligned line numbers with the current line brightened,
+  indent guides, a minimap of the whole buffered window, and a status bar
+  (`Ln 18  Spaces: 2  tsx`).
+- **Plus the two things an editor cannot show you**: the flow rail, marking the
+  lines the traced call graph actually runs through, and the diff tint of the
+  last write.
+
+## Change arrives as movement
+
+A scene message is a whole new graph, and applying one as a cut is a wasted
+frame: a file appears already drawn, new code replaces old code with nothing in
+between, and a definition that did not exist a second ago looks exactly like one
+that has been there all along. The whole point of this viewer is *change*, so
+arrival takes time, and the time is spent pointing at what changed:
+
+| What happened | What you see |
+| --- | --- |
+| A file becomes interesting | Its screen rises into the slot, fades up, and the editor paints itself in behind a bright rule travelling down the viewport. |
+| A write lands | The lines that actually changed flash and type themselves in from the left; the frame pulses; the screen scrolls to the edit rather than jumping. |
+| A definition is seen for the first time | Its glyph flares and settles into the graph. |
+| A file loses its slot | Its screen sinks and fades instead of vanishing between two frames. |
+| A row lands in the change log | It arrives from above, and its diff lines wipe in. |
+
+Which lines count as "changed" is diffed against the text that screen was already
+showing, not read off the diff marks — a mark survives for as long as the file
+stays hot, so trusting it would re-flash the same lines on every message until
+the heat decayed. The timings live in one place
+(`client/src/lib/motion.ts`) and collapse to a single frame under
+`prefers-reduced-motion`: every one of these is a flourish on information the
+colours already carry.
+
 ## What you are looking at
 
 | Element | Meaning |
@@ -79,7 +149,7 @@ usage counts as an edge, so a React component tree is part of the graph.
 | **Streamlines** | Real call paths. The braiding is *hierarchical edge bundling*: intermediate points are pulled toward their directory's trunk, so paths through the same module bundle together. `edge bundling: 0` shows the raw graph. |
 | **Colour** | The flow scalar on the legend. Cool is settled code; warm is code written seconds ago — and the cooldown runs continuously on the GPU, so colour keeps changing between server messages instead of freezing until the next one. |
 | **Glyphs** | Definitions the traced paths visit, sized by fan-in + fan-out. |
-| **Screens** | The most recently *changed* files, newest first. Changed lines are tinted, deletions struck through, and a flow rail marks the lines the call graph runs through. |
+| **Screens** | The most recently *changed* files, newest first, each drawn as a code window — see [Every screen is the editor](#every-screen-is-the-editor). Changed lines are tinted, deletions struck through, and a flow rail marks the lines the call graph runs through. |
 | **Tailing** | Each screen holds a buffer around the action and scrolls inside it to follow the newest change, wherever it lands in the file — an edit at line 260 scrolls there. Toggle under **navigate → screens**. |
 | **Unsaved edits** | A file being typed into shows *before* it is saved, with a dashed cyan frame and an `unsaved` tag. See below. |
 | **Grid** | Floor, two wall grids and height posts, so the space reads as a volume rather than a plane. It assembles on load: lines arrive scattered and settle into place in order, outwards from the centre and upwards from the floor. |
@@ -178,17 +248,15 @@ happen.
 
 ## Flat mode
 
-Click a row in the **changes** drawer to open that file full screen. Line numbers, syntax
-colours, flow rails, and the lines that changed on the last write. **edit** to
-type, **⌘S** to save, **Escape** or **✕** to return to 3D.
-
-![A file open flat, with line numbers, syntax colours and flow rails](docs/flat-editor.png)
+Click a row in the **changes** drawer to open that file full screen — the same
+editor as the screens in the scene, at desk distance: the same palette, the same
+line box, line numbers, flow rails, the lines that changed on the last write, and
+a status bar. It opens at the line the screen was following rather than at the
+top. **edit** to type, **⌘S** to save, **Escape** or **✕** to return to 3D.
 
 The drawer itself is the change log: every write since the repository was
 opened, newest first, with the diff expandable inline and a **SAVE** button that
 writes the buffer back to disk.
-
-![The changes drawer, with per-file diffs and graph statistics](docs/change-log.png)
 
 It stays live while open: when the watcher reports the file changed, the new
 text is pulled in. If you have unsaved work, the incoming version is never
@@ -362,12 +430,16 @@ server/
 client/src/
   scene/          Scene, Streamlines, Glyphs, CodePanels, ModuleTree,
                   ImportLinks, Environment, GridLines, Controls, Grab
-  lib/            tube geometry, transfer function, canvas textures, disposal
+  lib/            editorTheme.ts  the editor's palette and metrics, once, for
+                                  the canvas screens and the DOM alike
+                  motion.ts       transition timings + which lines are new
+                  tube geometry, transfer function, canvas textures, disposal
   export/         GLTFExporter pipeline
   ui/             HUD + drawers, change log, flat mode, folder picker, GLB viewer
 shared/
   protocol.ts     the wire types both sides import
-  highlight.ts    the tokenizer both sides use
+  highlight.ts    the tokenizer both sides use, with the token classes a real
+                  editor theme distinguishes
 ```
 
 ## GLB export
@@ -431,6 +503,12 @@ work doing the hard part:
 
 Contributions are welcome — issues and pull requests both. `make test` runs the
 end-to-end suite against a real boot of the stack, so start there.
+
+## Collaboration
+
+Open to any collaboration — ideas, features, integrations, or something built on
+top of this. Get in touch: [shusterilyaman@gmail.com](mailto:shusterilyaman@gmail.com),
+or open an issue on [GitHub](https://github.com/ilyashusterman/codeflow3d).
 
 ## License
 

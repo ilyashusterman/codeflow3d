@@ -336,10 +336,19 @@ export class RepoAnalyzer {
       graph = buildGraph(facts);
       this.assembled = { rev, graph };
     }
+    // Every file, most recently written first.
+    //
+    // This used to be filtered to files that changed *during the session*,
+    // which meant a freshly opened repo had no recent list at all and the
+    // screens fell back to the graph's entry points — so the first thing you
+    // saw was never the file you had just been editing. `changedAt` is disk
+    // mtime for a file the scan read and a real clock for one that changed
+    // since (see `upsert`), so a single sort spans both: your last edits are on
+    // screen from the first frame, and a live save moves to the front of them.
+    //
     // A file being typed into right now outranks one that was saved a moment
     // ago — the unsaved edit is the more current thing to be looking at.
     const recentlyChanged = [...this.files.values()]
-      .filter((f) => f.revisions > 1 || f.unsaved || f.born)
       .sort((a, b) => (b.unsaved?.at ?? b.changedAt) - (a.unsaved?.at ?? a.changedAt));
     return {
       graph,
