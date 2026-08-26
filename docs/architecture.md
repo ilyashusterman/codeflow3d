@@ -397,6 +397,30 @@ shared/
                   editor theme distinguishes
 ```
 
+## The pictures in these docs
+
+Every image in the README and on this page is of a live trace, and it is
+produced by running one — `make gif` for the recording, `make shots` for the
+stills.
+
+`scripts/record-trace.ts` stages a copy of this repository's own tracked files
+in `.run/stage`, backdates their mtimes six hours so the analyser reads the
+tree as settled rather than as one big write, boots the real stack against it,
+and then writes files into it on a schedule while filming the viewer through
+Chrome's DevTools Protocol. The beats are listed at the top of the script: two
+new modules, two edits to existing files, and one more arrival than the row has
+slots, so the last one pushes a screen out.
+
+Two details in there are worth keeping if you touch it. The frames are captured
+as PNG rather than JPEG, because a recompressed frame of a completely still
+scene still differs everywhere by a unit of luma, which stops GIF's frame
+differencing from finding anything unchanged to skip — that one change took the
+file from 21 MB to 7 MB. And the take fixes `tail: false` in the viewer's
+per-repository settings: following the camera to each change is the right
+default when you are watching an agent work, and wrong for a recording, where
+it puts the whole frame in motion and leaves the arrivals with nothing still to
+arrive into.
+
 ## GLB export
 
 `export .glb` serializes the live scene, saves it to `exports/`, downloads a

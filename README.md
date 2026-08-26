@@ -11,7 +11,8 @@ has not touched at all.
 
 ![Files arriving in a live trace: a new screen slides into the row and fades up while the others make room, a write reveals itself line by line, and the screen that runs out of slots fades out](docs/live-trace.gif)
 
-*One take, unedited. Every arrival is a real file, written while the recording ran.*
+*One take, unedited. Every arrival is a real file, written while the recording
+ran — `make gif` records it again from scratch.*
 
 ## Run it
 
