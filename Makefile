@@ -29,15 +29,10 @@ LOG      := $(RUN_DIR)/dev.log
 E2E_UI_PORT  ?= 5288
 E2E_API_PORT ?= 5289
 
-# Everything `make kill` is responsible for. Patterns are project-scoped, so an
-# unrelated bun or vite elsewhere on the machine is left alone.
-PORTS    := $(UI_PORT) $(API_PORT) $(E2E_UI_PORT) $(E2E_API_PORT)
-PATTERNS := scripts/dev.ts scripts/e2e.ts server/index.ts client/vite.config.ts
-
 DEV := PORT=$(UI_PORT) API_PORT=$(API_PORT)
 
 .PHONY: help install run dev up down kill kill-all restart logs status \
-        build start typecheck test test-e2e clean
+        build start typecheck test test-e2e gif shots clean
 
 help:
 	@printf '\n  codeflow3d\n\n'
@@ -46,9 +41,12 @@ help:
 	@printf '  make up          dev stack in the background\n'
 	@printf '  make logs        follow the background log\n'
 	@printf '  make status      ports, pid, and what the API reports\n'
-	@printf '  make kill        stop every process this project starts\n'
+	@printf '  make kill-all    stop every process and free every port this project uses\n'
+	@printf '  make kill        the same thing, shorter to type\n'
 	@printf '  make restart     kill, then up\n'
 	@printf '  make test        end-to-end: API, watcher, viewer, HMR, write-back\n'
+	@printf '  make gif         re-record docs/live-trace.gif from a real trace\n'
+	@printf '  make shots       re-take the screenshots in docs/architecture.md\n'
 	@printf '  make build       production client bundle\n'
 	@printf '  make start       serve the built bundle from the API port\n'
 	@printf '  make typecheck   tsc --noEmit\n'
@@ -91,26 +89,14 @@ status:
 
 # ------------------------------------------------------------------ kill
 
-# Ports first — that is what actually blocks a restart — then any straggler
-# holding no socket: a crashed Vite child, a --watch supervisor mid-reload.
+# `kill-all` is the thorough one, and `kill`/`down` are the same thing: the dev
+# stack is a tree (dev.ts -> bun --watch API + Vite -> esbuild workers), and any
+# node of it can outlive its parent and keep holding a port. The script collects
+# candidates from the pidfile, from every port this project can bind, and from
+# command lines belonging to this checkout, then walks down to their children and
+# escalates SIGTERM to SIGKILL. It refuses to touch the editor or this shell.
 kill kill-all down:
-	@test -f $(RUN_DIR)/dev.pid && kill "$$(cat $(RUN_DIR)/dev.pid)" 2>/dev/null \
-	  && printf '  pid %s -> stopped\n' "$$(cat $(RUN_DIR)/dev.pid)" || true
-	@for p in $(PORTS); do pids=$$(lsof -ti tcp:$$p 2>/dev/null); \
-	  if [ -n "$$pids" ]; then kill $$pids 2>/dev/null; \
-	    printf '  port %s -> stopped %s\n' "$$p" "$$(echo $$pids | tr '\n' ' ')"; fi; done
-	@for pat in $(PATTERNS); do pids=$$(pgrep -f "$$pat" 2>/dev/null); \
-	  if [ -n "$$pids" ]; then kill $$pids 2>/dev/null; \
-	    printf '  %s -> stopped %s\n' "$$pat" "$$(echo $$pids | tr '\n' ' ')"; fi; done
-	@sleep 0.8
-	@# Whatever ignored SIGTERM gets SIGKILL, so `make up` is never blocked.
-	@for p in $(PORTS); do pids=$$(lsof -ti tcp:$$p 2>/dev/null); \
-	  if [ -n "$$pids" ]; then kill -9 $$pids 2>/dev/null; \
-	    printf '  port %s -> SIGKILL %s\n' "$$p" "$$(echo $$pids | tr '\n' ' ')"; fi; done
-	@for pat in $(PATTERNS); do pids=$$(pgrep -f "$$pat" 2>/dev/null); \
-	  if [ -n "$$pids" ]; then kill -9 $$pids 2>/dev/null; fi; done
-	@rm -f $(RUN_DIR)/dev.pid
-	@echo "  all codeflow3d processes stopped"
+	@$(ROOT)/scripts/kill-all.sh
 
 # ------------------------------------------------------------------ build, test
 
@@ -127,6 +113,18 @@ typecheck:
 test test-e2e:
 	@mkdir -p $(RUN_DIR)
 	cd $(ROOT) && PORT=$(E2E_UI_PORT) API_PORT=$(E2E_API_PORT) bun scripts/e2e.ts
+
+# ------------------------------------------------------------------ the docs
+#
+# The recording in the README and the stills in docs/architecture.md are of a
+# live trace, so they are produced by running one: the script stages a copy of
+# this repository, boots the stack against it, writes real files into it on a
+# schedule, and films the viewer reacting. Needs Chrome and ffmpeg.
+gif:
+	cd $(ROOT) && bun scripts/record-trace.ts
+
+shots:
+	cd $(ROOT) && bun scripts/record-trace.ts --stills
 
 clean:
 	rm -rf $(ROOT)/client/dist $(RUN_DIR)
