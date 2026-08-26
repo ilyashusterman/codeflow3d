@@ -535,6 +535,31 @@ async function main() {
   check("api is a --watch process", child?.pid !== undefined && !child?.killed);
 
   // ---- read + write round trip (what the in-scene editor does)
+  /*
+   * A browser that cannot draw the scene still gets an application.
+   *
+   * The failure this guards against was a black rectangle: opened in VS Code's
+   * built-in browser the page loaded — the tab took its title from it — and then
+   * `<Canvas>` threw, which during render unmounts the entire tree, HUD and all.
+   * Nothing on screen said so, and a blank near-black page is indistinguishable
+   * from a server that never started. These are source-level checks because the
+   * condition is a property of the client's structure, not of a response.
+   */
+  const app = await readFile(resolve(ROOT, "client/src/App.tsx"), "utf8");
+  check(
+    "the scene is behind a capability check, so a browser without WebGL keeps the HUD",
+    /hasWebGL\(\)/.test(app) && /webgl && \(/.test(app),
+  );
+  check(
+    "and behind an error boundary, so a scene that throws does not take the page with it",
+    /<SceneBoundary/.test(app) && /SceneFallback/.test(app),
+  );
+  const socketSrc = await readFile(resolve(ROOT, "client/src/net/socket.ts"), "utf8");
+  check(
+    "a websocket that cannot even be constructed retries rather than unmounting the app",
+    /try\s*\{\s*ws = new WebSocket/.test(socketSrc),
+  );
+
   const src = await api<{ source: string; language: string | null }>("/api/source?file=beta.ts");
   check("source served for a tracked file", src.source.includes("export function beta"), `language=${src.language}`);
 

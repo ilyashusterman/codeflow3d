@@ -421,6 +421,55 @@ html, body, #root {
 .modal-body > header button { background: none; border: 0; color: var(--ink); font: inherit; cursor: pointer; font-size: 15px; }
 .modal-body a { color: var(--accent); }
 
+/* --------------------------------------------------------- no scene to draw */
+/* Sits where the canvas would be, and leaves the HUD alone: the drawers, the
+   change log and flat mode all still work without WebGL. */
+.no-gl {
+  position: absolute;
+  inset: 0 0 36px 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(ellipse at 50% 40%, rgba(20, 34, 48, 0.55), transparent 70%),
+    var(--bg);
+}
+.no-gl-card {
+  max-width: 62ch;
+  padding: 22px 26px;
+  border: 1px solid var(--line);
+  border-left: 2px solid var(--hot);
+  border-radius: var(--r);
+  background: var(--surface);
+}
+.no-gl-card h2 {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--hot);
+}
+.no-gl-card p { margin: 0 0 10px; color: var(--dim); font-size: 11.5px; line-height: 1.7; }
+.no-gl-card p:last-child { margin-bottom: 0; }
+.no-gl-card b { color: var(--accent); font-weight: 400; }
+.no-gl-card code {
+  font-size: 11px;
+  padding: 1px 5px;
+  border-radius: var(--r);
+  background: rgba(122, 152, 184, 0.13);
+  color: var(--ink);
+}
+.no-gl-hint { color: var(--dimmer) !important; }
+.no-gl-why {
+  margin-top: 14px !important;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  color: var(--dimmer) !important;
+  font-size: 10.5px !important;
+  word-break: break-word;
+}
+
 /* ------------------------------------------------------------------- boot */
 .boot { position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; }
 .boot-card {

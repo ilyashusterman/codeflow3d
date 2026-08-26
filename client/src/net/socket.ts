@@ -9,7 +9,21 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 
 export function connect() {
   if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
-  ws = new WebSocket(wsUrl());
+  try {
+    ws = new WebSocket(wsUrl());
+  } catch (err) {
+    /*
+     * Constructing a socket can throw outright — a sandbox that forbids the
+     * scheme, a blocked port. This runs from an effect during mount, and an
+     * uncaught throw there unmounts the application, so the viewer would go
+     * black rather than showing that it is disconnected. Retry instead.
+     */
+    console.error("[ws]", err);
+    useStore.getState().setConnected(false);
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(connect, Math.min(4000, 250 * 2 ** retry++));
+    return;
+  }
 
   ws.onopen = () => {
     retry = 0;

@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { Scene } from "./scene/Scene";
 import { StatusToast } from "./ui/StatusToast";
 import { GlbViewerPage } from "./ui/GlbViewer";
 import { FlatView } from "./ui/FlatView";
 import { Hud, HudHotkeys } from "./ui/Hud";
+import { SceneBoundary, SceneFallback } from "./ui/SceneFallback";
+import { hasWebGL } from "./lib/webgl";
 import { connect } from "./net/socket";
 import { useStore } from "./state/store";
 
@@ -20,6 +22,17 @@ function LiveApp() {
   const setZoomed = useStore((s) => s.setZoomed);
   const moving = useStore((s) => s.moving);
   const [cameraPos, setCameraPos] = useState<[number, number, number]>([0, 0, 0]);
+  /*
+   * Whether there is a scene to draw, decided before the first render.
+   *
+   * `<Canvas>` throws when it cannot get a context, and a throw during render
+   * takes the whole tree with it — which is why an embedded browser without
+   * WebGL used to show a black page instead of an application. Probing first
+   * keeps the HUD, the change log and the editor alive, and the boundary below
+   * catches the scene failing for any other reason.
+   */
+  const webgl = useMemo(() => hasWebGL(), []);
+  const [sceneError, setSceneError] = useState<string | null>(null);
 
   useEffect(() => {
     connect();
@@ -33,7 +46,12 @@ function LiveApp() {
 
   return (
     <div className={`app ${chromeHidden ? "flying" : ""} ${drawer ? "drawer-open" : ""}`}>
-      <Scene onCameraSample={sample} />
+      {webgl && (
+        <SceneBoundary onError={setSceneError}>
+          <Scene onCameraSample={sample} />
+        </SceneBoundary>
+      )}
+      {(!webgl || sceneError) && <SceneFallback reason={sceneError} />}
       <StatusToast />
       <Hud
         cameraPos={cameraPos}
@@ -49,15 +67,15 @@ function LiveApp() {
         </div>
       )}
 
-      {navMode === "fly" && pointerLocked && <div className="crosshair" />}
-      {navMode === "fly" && !pointerLocked && !focused && (
+      {webgl && !sceneError && navMode === "fly" && pointerLocked && <div className="crosshair" />}
+      {webgl && !sceneError && navMode === "fly" && !pointerLocked && !focused && (
         <div className="nav-hint">
           click the scene to fly · <b>WASD</b> move · <b>Q/E</b> down/up · <b>shift</b> sprint ·{" "}
           <b>esc</b> release
         </div>
       )}
 
-      {!scene && (
+      {!scene && webgl && !sceneError && (
         <div className="boot">
           <div className="boot-card">
             <h1>codeflow3d</h1>
