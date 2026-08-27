@@ -41,15 +41,33 @@ export function SceneFallback({ reason }: { reason: string | null }) {
   // renderer already failed, so the answer is a description of that failure
   // rather than a prediction of it.
   const probe = probeWebGL();
+  // Worth separating, because only one of these is anybody's to fix. A view
+  // that has WebGL1 and no WebGL2 cannot run this renderer at all — three.js
+  // dropped WebGL1 in r163 — while a view that grants nothing is usually a
+  // browser whose GPU process has died, which a restart brings back.
+  const onlyWebGL1 = probe === "webgl";
   return (
     <div className="no-gl">
       <div className="no-gl-card">
         <h2>the scene could not start</h2>
+        {onlyWebGL1 ? (
+          <p>
+            This browser view offers WebGL 1 only, and the renderer needs WebGL
+            2 — three.js dropped WebGL 1 in r163, so there is no version of this
+            scene that runs here.
+          </p>
+        ) : (
+          <p>
+            The 3D view needs a WebGL context and this browser view would not
+            give it one, in any of the three configurations it was asked for. In
+            an embedded browser that usually means its GPU process is gone;
+            restarting the editor brings it back.
+          </p>
+        )}
         <p>
-          The 3D view needs a WebGL context and this browser view would not give
-          it one. Everything that is not the scene still works: <b>C</b> opens
-          the change log, <b>Tab</b> the controls, and clicking a file there
-          opens it full screen.
+          Everything that is not the scene still works: <b>C</b> opens the
+          change log, <b>Tab</b> the controls, and clicking a file there opens
+          it full screen.
         </p>
         <p className="no-gl-hint">
           For the scene itself, open <code>{location.href.replace(/\?.*$/, "")}</code> in
