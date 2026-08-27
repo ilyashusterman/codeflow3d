@@ -11,7 +11,7 @@
  */
 import { useEffect, useMemo } from "react";
 import { Canvas, useThree } from "@react-three/fiber";
-import { ACESFilmicToneMapping, SRGBColorSpace, WebGLRenderer, type WebGLRendererParameters } from "three";
+import { ACESFilmicToneMapping, SRGBColorSpace, WebGLRenderer } from "three";
 import type { SceneGraph } from "@shared/protocol";
 import { useStore } from "../state/store";
 import { EXPORT_ROOT_NAME, liveScene } from "../export/glb";
@@ -66,36 +66,58 @@ function Layers({ scene }: { scene: SceneGraph }) {
  * Build the renderer, degrading the request rather than giving up on it.
  *
  * three.js asks for a context once, with exactly the attributes it was handed,
- * and reports `Error creating WebGL context.` if that one request is refused.
- * Those attributes are a wish list, not requirements: `high-performance` asks
- * the browser for the discrete GPU, and `antialias` asks for a multisampled
- * drawing buffer. An embedded browser running on a software rasteriser — VS
- * Code's built-in browser view, a remote desktop, a VM — can refuse that exact
- * combination while granting a plainer one without complaint.
+ * and throws a bare `Error creating WebGL context.` when that one request is
+ * refused — after printing the browser's real explanation to the console,
+ * where a user staring at the page will never see it. Both halves of that are
+ * fixed here by asking for the context directly and handing the result to
+ * three.js, which then cannot fail.
  *
- * So the same real canvas is asked three times, each time for less. Attributes
- * only take effect on the request that actually creates the context, so a
- * refused attempt costs nothing and leaks nothing.
+ * The attributes are a wish list, not requirements: `high-performance` asks for
+ * the discrete GPU, `antialias` for a multisampled drawing buffer. A browser on
+ * a software rasteriser can refuse that exact combination and grant a plainer
+ * one, so the same real canvas is asked three times, each time for less.
+ * Attributes only bind on the request that actually creates the context, so a
+ * refused attempt costs nothing and leaves the canvas reusable.
  *
- * What this cannot paper over: three.js has been WebGL2-only since r163, so a
- * view that offers WebGL1 and nothing else has no path here at all. That case
- * is reported rather than retried — see ui/SceneFallback.
+ * When every attempt is refused, the browser's own reason is thrown — it is the
+ * only text that distinguishes "this machine has no GPU access" from anything
+ * the application could have done differently. Chromium words that one:
+ *
+ *   GL_VENDOR = Disabled, GL_RENDERER = Disabled, Sandboxed = yes,
+ *   ErrorMessage = BindToCurrentSequence failed
+ *
+ * which means its GPU process is gone, and no amount of retrying will bring it
+ * back — only restarting the browser will.
  */
 function makeRenderer(canvas: HTMLCanvasElement): WebGLRenderer {
-  const attempts: WebGLRendererParameters[] = [
+  const attempts: WebGLContextAttributes[] = [
     { antialias: true, powerPreference: "high-performance", alpha: false, stencil: false },
     { antialias: false, powerPreference: "default", alpha: false, stencil: false },
     { antialias: false, powerPreference: "low-power", alpha: true, stencil: false, failIfMajorPerformanceCaveat: false },
   ];
-  let last: unknown;
-  for (const params of attempts) {
-    try {
-      return new WebGLRenderer({ canvas, ...params });
-    } catch (err) {
-      last = err;
+
+  // The only place the browser says *why*; it arrives as an event, not a throw.
+  let why = "";
+  const capture = (e: Event) => {
+    const message = (e as WebGLContextEvent).statusMessage;
+    if (message) why = message;
+  };
+  canvas.addEventListener("webglcontextcreationerror", capture, false);
+  try {
+    for (const attrs of attempts) {
+      const context = canvas.getContext("webgl2", attrs);
+      if (context) return new WebGLRenderer({ canvas, context, ...attrs });
     }
+    // Nothing left to try, but there is one more thing worth knowing: whether
+    // this browser has WebGL at all or only the version three.js dropped in
+    // r163. This poisons the canvas for WebGL2, which is moot — we are leaving.
+    if (canvas.getContext("webgl")) {
+      throw new Error("this browser view offers WebGL 1 only, and the renderer needs WebGL 2");
+    }
+    throw new Error(why || "the browser refused a WebGL context and gave no reason");
+  } finally {
+    canvas.removeEventListener("webglcontextcreationerror", capture);
   }
-  throw last instanceof Error ? last : new Error(String(last));
 }
 
 export function Scene({

@@ -46,6 +46,9 @@ export function SceneFallback({ reason }: { reason: string | null }) {
   // dropped WebGL1 in r163 — while a view that grants nothing is usually a
   // browser whose GPU process has died, which a restart brings back.
   const onlyWebGL1 = probe === "webgl";
+  // Chromium's phrasing when the GPU process is unreachable. Worth singling out:
+  // it is the one cause that looks like a bug in this application and is not.
+  const gpuDisabled = /GL_RENDERER = Disabled|BindToCurrentSequence|GPU process/i.test(reason ?? "");
   return (
     <div className="no-gl">
       <div className="no-gl-card">
@@ -56,12 +59,18 @@ export function SceneFallback({ reason }: { reason: string | null }) {
             2 — three.js dropped WebGL 1 in r163, so there is no version of this
             scene that runs here.
           </p>
+        ) : gpuDisabled ? (
+          <p>
+            This browser has <b>no GPU access</b> — it reports its renderer as
+            disabled, which is what Chromium says once its GPU process has gone.
+            Nothing in a page can bring that back. <b>Quit and reopen the
+            browser</b> (in VS Code, quit the editor rather than reloading the
+            window) and it returns.
+          </p>
         ) : (
           <p>
             The 3D view needs a WebGL context and this browser view would not
-            give it one, in any of the three configurations it was asked for. In
-            an embedded browser that usually means its GPU process is gone;
-            restarting the editor brings it back.
+            give it one, in any of the three configurations it was asked for.
           </p>
         )}
         <p>
