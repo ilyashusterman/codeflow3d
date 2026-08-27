@@ -81,11 +81,11 @@ const log = (msg: string) => console.log(`  ${msg}`);
 // cold repository renders cold, and that is what gives the take its subject:
 // settled blue code, and the writes landing on it warm.
 
-const SETTLED_AGE_MS = 6 * 60 * 60 * 1000;
+export const SETTLED_AGE_MS = 6 * 60 * 60 * 1000;
 
-async function stageRepo() {
-  await rm(resolve(STAGE, ".."), { recursive: true, force: true });
-  await mkdir(STAGE, { recursive: true });
+export async function stageRepo(into: string = STAGE) {
+  await rm(resolve(into, ".."), { recursive: true, force: true });
+  await mkdir(into, { recursive: true });
 
   const tracked = Bun.spawnSync(["git", "ls-files"], { cwd: ROOT }).stdout.toString().trim().split("\n");
   const when = new Date(Date.now() - SETTLED_AGE_MS);
@@ -95,7 +95,7 @@ async function stageRepo() {
     if (!rel || rel.startsWith("docs/")) continue;
     const from = Bun.file(resolve(ROOT, rel));
     if (!(await from.exists())) continue;
-    const to = join(STAGE, rel);
+    const to = join(into, rel);
     await mkdir(resolve(to, ".."), { recursive: true });
     await Bun.write(to, from);
     await utimes(to, when, when);
@@ -116,7 +116,15 @@ async function stageRepo() {
  * from it, so each arrival lands somewhere real in the graph rather than
  * floating on its own.
  */
-const BEATS: { at: number; file: string; append?: string; content?: string; note: string }[] = [
+export interface Beat {
+  at: number;
+  file: string;
+  append?: string;
+  content?: string;
+  note: string;
+}
+
+export const BEATS: Beat[] = [
   {
     at: 1200,
     file: "client/src/lib/ease.ts",
@@ -666,7 +674,10 @@ async function assemble(frames: { file: string; at: number }[]) {
 // ------------------------------------------------------------------- main
 
 const t0 = Date.now();
-try {
+
+// Imported by scripts/record-desktop.ts for the staging and the beats; only a
+// direct run should go and record something.
+if (import.meta.main) try {
   await mkdir(RUN, { recursive: true });
   const frames = await record();
   if (OPT.stills) {
