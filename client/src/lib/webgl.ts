@@ -25,17 +25,31 @@ export function fallbackForced(): boolean {
 
 export type Probe = "webgl2" | "webgl" | "none" | "threw";
 
-/** What a context request answers *now* — asked only after something failed. */
+let probed: Probe | null = null;
+
+/**
+ * What a context request answers *now* — asked only after something failed.
+ *
+ * Cached and disposed, both deliberately. Contexts are a per-process resource
+ * with a hard ceiling, and a renderer that has hit that ceiling is one of the
+ * reasons the scene fails in the first place; a diagnostic that allocates one
+ * more on every render would be making the thing it is describing worse.
+ */
 export function probeWebGL(): Probe {
+  if (probed !== null) return probed;
   try {
     const canvas = document.createElement("canvas");
     // A size, because zero-sized surfaces are refused in some embedders.
     canvas.width = 64;
     canvas.height = 64;
-    if (canvas.getContext("webgl2")) return "webgl2";
-    if (canvas.getContext("webgl") ?? canvas.getContext("experimental-webgl")) return "webgl";
-    return "none";
+    const gl =
+      canvas.getContext("webgl2") ??
+      canvas.getContext("webgl") ??
+      canvas.getContext("experimental-webgl");
+    probed = gl ? (canvas.getContext("webgl2") ? "webgl2" : "webgl") : "none";
+    (gl as WebGLRenderingContext | null)?.getExtension("WEBGL_lose_context")?.loseContext();
   } catch {
-    return "threw";
+    probed = "threw";
   }
+  return probed;
 }
